@@ -12,6 +12,7 @@ from functools import wraps
 from time import sleep
 from logging.handlers import RotatingFileHandler
 from subprocess import Popen, PIPE
+import threading
 
 
 # color themes
@@ -29,6 +30,34 @@ PRINT_THEMES = {
     'reset': '\033[0m'
 }
 DISPLAY_COLORS = True
+
+# Controller to manage pause/cancel across downloader threads
+class DownloadController:
+    def __init__(self):
+        # pause_event is set when running, cleared when paused
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        # cancel_event is set when user requests cancellation
+        self.cancel_event = threading.Event()
+
+    def pause(self):
+        self.pause_event.clear()
+
+    def resume(self):
+        self.pause_event.set()
+
+    def is_paused(self):
+        return not self.pause_event.is_set()
+
+    def wait_if_paused(self):
+        # Blocks until resumed. Returns immediately if not paused.
+        self.pause_event.wait()
+
+    def cancel(self):
+        self.cancel_event.set()
+
+    def is_cancelled(self):
+        return self.cancel_event.is_set()
 
 # strip ANSI characters, to write to log file
 strip_ansi = lambda text: re.sub(r'\x1b\[[0-9;]*m', '', text)
@@ -50,6 +79,8 @@ class VersionManager():
     def __init__(self):
         self.parse_version = lambda version: tuple(map(int, (version.split('.') + ['0', '0'])[:3]))
         self.current_version = self.get_current_version()
+
+    def version_check(self):
         self.latest_changelog = self.get_latest_changelog()
         if self.latest_changelog:
             self.latest_version = next(iter(self.latest_changelog.keys()))
@@ -233,6 +264,65 @@ def colprint(theme, text, **kwargs):
         return _get_input_(f'{c_strt}{text}{c_end}', input_type, input_dtype, input_options, allow_empty_input)
     else:
         print(f'{c_strt}{text}{c_end}', end=line_end)
+
+def _input_listener(ctrl):
+    """Internal: cross-platform non-blocking listener for download controls."""
+    colprint('predefined', '\nDownload Controls: p = toggle pause/resume, c = cancel all downloads')
+    try:
+        import msvcrt
+        use_msvcrt = True
+    except Exception:
+        use_msvcrt = False
+
+    if use_msvcrt:
+        # Windows: single-key non-blocking
+        while not ctrl.is_cancelled() and not getattr(ctrl, 'is_stopped', lambda: False)():
+            if msvcrt.kbhit():
+                ch = msvcrt.getwch().lower()
+                if ch == 'p':
+                    if ctrl.is_paused():
+                        ctrl.resume(); colprint('predefined', '\nResumed downloads')
+                    else:
+                        ctrl.pause(); colprint('predefined', '\nPaused downloads')
+                elif ch == 'c':
+                    ctrl.cancel(); colprint('predefined', '\nCancelling downloads...'); break
+            threading.Event().wait(0.1)
+    else:
+        # POSIX: use select with timeout so we can check stop flag regularly
+        import select
+        while not ctrl.is_cancelled() and not getattr(ctrl, 'is_stopped', lambda: False)():
+            dr, _, _ = select.select([sys.stdin], [], [], 0.1)
+            if dr:
+                try:
+                    line = sys.stdin.readline()
+                except Exception:
+                    break
+                cmd = line.strip().lower()
+                if cmd == 'p':
+                    if ctrl.is_paused():
+                        ctrl.resume(); colprint('predefined', 'Resumed downloads')
+                    else:
+                        ctrl.pause(); colprint('predefined', 'Paused downloads')
+                elif cmd == 'c':
+                    ctrl.cancel(); colprint('predefined', 'Cancelling downloads...'); break
+
+def start_input_listener(controller):
+    """Start the input listener thread and return Thread object."""
+    t = threading.Thread(target=_input_listener, args=(controller,), daemon=True)
+    t.start()
+    return t
+
+def stop_input_listener(controller, thread=None, timeout=1.0):
+    """Signal listener to stop and join thread (if provided)."""
+    try:
+        controller.stop()
+    except Exception:
+        pass
+    if thread:
+        try:
+            thread.join(timeout)
+        except Exception:
+            pass
 
 # custom decorator for retring of a function
 def retry(exceptions=(Exception,), tries=3, delay=2, backoff=2, print_errors=False):

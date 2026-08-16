@@ -5,6 +5,7 @@ import re
 
 from Utils.commons import retry
 from Utils.BaseDownloader import BaseDownloader
+import http.client
 
 
 class HLSDownloader(BaseDownloader):
@@ -60,7 +61,6 @@ class HLSDownloader(BaseDownloader):
         '''
         try:
             # some urls have query params, so we need to strip them off to get the filename
-            # NOTE TO FUTURE SELF: This won't work if the same url has different query params. But that is highly unlikely for HLS segments.
             segment_file_nm = ts_url.split('/')[-1].split('?')[0]
             segment_file = os.path.join(f"{self.temp_dir}", f"{segment_file_nm}")
 
@@ -68,8 +68,30 @@ class HLSDownloader(BaseDownloader):
             if os.path.isfile(segment_file) and os.path.getsize(segment_file) > 0:
                 return (f'Segment file [{segment_file_nm}] already exists. Reusing.', 1)
 
-            with open(segment_file, "wb") as ts_file:
-                ts_file.write(self._get_stream_data(ts_url))
+            # Stream download so we can honor pause/cancel events
+            response = self._get_raw_stream_data(ts_url, stream=True)
+            size = 0
+            with open(segment_file, 'wb') as ts_file:
+                if isinstance(response, http.client.HTTPResponse):
+                    while True:
+                        if self.controller:
+                            if self.controller.is_cancelled():
+                                return (f'ERROR: Segment download cancelled [{segment_file_nm}]', 0)
+                            self.controller.wait_if_paused()
+
+                        chunk = response.read(1024*64)
+                        if not chunk:
+                            break
+                        size += ts_file.write(chunk)
+                else:
+                    for chunk in response.iter_content(1024*64):
+                        if self.controller:
+                            if self.controller.is_cancelled():
+                                return (f'ERROR: Segment download cancelled [{segment_file_nm}]', 0)
+                            self.controller.wait_if_paused()
+
+                        if chunk:
+                            size += ts_file.write(chunk)
 
             return (f'Segment file [{segment_file_nm}] downloaded', 1)
 
@@ -174,6 +196,9 @@ class HLSDownloader(BaseDownloader):
                     'download_dir': self.temp_dir,  # Download audio to the same temp directory as video segments
                     'temp_download_dir': os.path.join(self.temp_dir, 'audio')
                 })
+                # propagate controller if present so audio downloader honors pause/cancel
+                if isinstance(self.dl_config, dict) and self.dl_config.get('_controller'):
+                    dl_config['_controller'] = self.dl_config['_controller']
                 audio_downloader = HLSDownloader(dl_config, {'episodeName': audio_file_name})
                 status = audio_downloader.start_download(self.audio)
                 if status[0] != 0: self.logger.error(f'Failed to download the audio with error: {status[1]}')
