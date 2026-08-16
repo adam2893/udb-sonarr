@@ -265,6 +265,65 @@ def colprint(theme, text, **kwargs):
     else:
         print(f'{c_strt}{text}{c_end}', end=line_end)
 
+def _input_listener(ctrl):
+    """Internal: cross-platform non-blocking listener for download controls."""
+    colprint('predefined', '\nDownload Controls: p = toggle pause/resume, c = cancel all downloads')
+    try:
+        import msvcrt
+        use_msvcrt = True
+    except Exception:
+        use_msvcrt = False
+
+    if use_msvcrt:
+        # Windows: single-key non-blocking
+        while not ctrl.is_cancelled() and not getattr(ctrl, 'is_stopped', lambda: False)():
+            if msvcrt.kbhit():
+                ch = msvcrt.getwch().lower()
+                if ch == 'p':
+                    if ctrl.is_paused():
+                        ctrl.resume(); colprint('predefined', '\nResumed downloads')
+                    else:
+                        ctrl.pause(); colprint('predefined', '\nPaused downloads')
+                elif ch == 'c':
+                    ctrl.cancel(); colprint('predefined', '\nCancelling downloads...'); break
+            threading.Event().wait(0.1)
+    else:
+        # POSIX: use select with timeout so we can check stop flag regularly
+        import select
+        while not ctrl.is_cancelled() and not getattr(ctrl, 'is_stopped', lambda: False)():
+            dr, _, _ = select.select([sys.stdin], [], [], 0.1)
+            if dr:
+                try:
+                    line = sys.stdin.readline()
+                except Exception:
+                    break
+                cmd = line.strip().lower()
+                if cmd == 'p':
+                    if ctrl.is_paused():
+                        ctrl.resume(); colprint('predefined', 'Resumed downloads')
+                    else:
+                        ctrl.pause(); colprint('predefined', 'Paused downloads')
+                elif cmd == 'c':
+                    ctrl.cancel(); colprint('predefined', 'Cancelling downloads...'); break
+
+def start_input_listener(controller):
+    """Start the input listener thread and return Thread object."""
+    t = threading.Thread(target=_input_listener, args=(controller,), daemon=True)
+    t.start()
+    return t
+
+def stop_input_listener(controller, thread=None, timeout=1.0):
+    """Signal listener to stop and join thread (if provided)."""
+    try:
+        controller.stop()
+    except Exception:
+        pass
+    if thread:
+        try:
+            thread.join(timeout)
+        except Exception:
+            pass
+
 # custom decorator for retring of a function
 def retry(exceptions=(Exception,), tries=3, delay=2, backoff=2, print_errors=False):
     """

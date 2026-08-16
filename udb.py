@@ -8,7 +8,7 @@ from time import time
 import traceback
 
 # Note: For optimization, custom modules are imported as required
-from Utils.commons import colprint_init, colprint, PRINT_THEMES, ExitException, DownloadController
+from Utils.commons import colprint_init, colprint, PRINT_THEMES, ExitException, DownloadController, start_input_listener, stop_input_listener
 from Utils.commons import create_logger, load_yaml, pretty_time, strip_ansi, threaded, delete_old_logs, get_ffmpeg_version
 from Utils.commons import VersionManager
 
@@ -530,23 +530,8 @@ if __name__ == '__main__':
             # add controller into downloader config so individual downloaders can check it
             downloader_config['_controller'] = controller
 
-            # start a command listener thread to handle pause/cancel commands from user
-            def _command_listener(ctrl):
-                colprint('predefined', '\nDownload Controls: p = toggle pause/resume, c = cancel all downloads')
-                while not ctrl.is_cancelled():
-                    try:
-                        cmd = input().strip().lower()
-                    except Exception:
-                        break
-                    if cmd == 'p':
-                        if ctrl.is_paused():
-                            ctrl.resume(); colprint('predefined', 'Resumed downloads')
-                        else:
-                            ctrl.pause(); colprint('predefined', 'Paused downloads')
-                    elif cmd == 'c':
-                        ctrl.cancel(); colprint('predefined', 'Cancelling downloads...'); break
-
-            threading.Thread(target=_command_listener, args=(controller,), daemon=True).start()
+            # start a modular, cross-platform input listener thread (defined in commons)
+            listener_thread = start_input_listener(controller)
         elif proceed == 'e':
             # option for user to edit his choices. hidden option for dev ;)
             new_selected_eps = get_ep_range(f"{selected_eps['start']}-{selected_eps['end']}", 'Edit')
@@ -565,6 +550,13 @@ if __name__ == '__main__':
         # invoke downloader using a threadpool
         logger.info(f'Invoking batch downloader with {max_parallel_downloads = }')
         batch_downloader(downloader, target_dl_links, downloader_config, max_parallel_downloads)
+
+        # ensure listener thread is stopped/joined for a clean exit
+        try:
+            if 'controller' in locals() and 'listener_thread' in locals():
+                stop_input_listener(controller, listener_thread, timeout=1.0)
+        except Exception:
+            pass
 
     except SystemExit as se:
         # propagate the exit from argparse after printing help or on parse error
