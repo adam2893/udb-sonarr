@@ -1,6 +1,8 @@
 # Changelog
 
-## Version 2.16.1 [2026-07-13]
+## Version 2.16.2 [2026-08-16]
+- Feature: Add controls to pause, resume, and cancel active downloads.
+- Feature: Option to disable automatic update checks via the CLI flag `--skip-update-check`.
 - Enhancement #95: Download episodes/movies with double-digit numbering.
 - Enhancement #94: Update the project from `quickjs` to `quickjs-ng`, which is actively maintained.
 

@@ -3,11 +3,12 @@ __author__ = 'Prudhvi PLN'
 import argparse
 from datetime import datetime
 import os, sys
+import threading
 from time import time
 import traceback
 
 # Note: For optimization, custom modules are imported as required
-from Utils.commons import colprint_init, colprint, PRINT_THEMES, ExitException
+from Utils.commons import colprint_init, colprint, PRINT_THEMES, ExitException, DownloadController
 from Utils.commons import create_logger, load_yaml, pretty_time, strip_ansi, threaded, delete_old_logs, get_ffmpeg_version
 from Utils.commons import VersionManager
 
@@ -328,6 +329,7 @@ if __name__ == '__main__':
                             help='accuracy to display the file size of hls files. Use 0 to disable. Please enable only if required as it is slow')
         parser.add_argument('-dl', '--disable-looping', default=False, action='store_true', help='disable auto-restart of UDB')
         parser.add_argument('-u', '--update', default=False, action='store_true', help='update UDB to the latest version available')
+        parser.add_argument('--skip-update-check', default=False, action='store_true', help='skip remote update checks (no network call)')
 
         args = parser.parse_args()
         config_file = args.conf
@@ -352,12 +354,18 @@ if __name__ == '__main__':
         hls_size_accuracy = args.hls_size_accuracy
         disable_looping = args.disable_looping
         update_flag = args.update
+        skip_update_check = args.skip_update_check
 
         # initialize color printer
         colprint_init(disable_colors)
 
         # Get update status
-        status_code, status_message = version_mngr.update_status
+        if skip_update_check and not display_version and not update_flag:
+            colprint('predefined', 'Skipping remote update checks as per user request')
+            status_code, status_message = 0, 'Update check skipped'
+        else:
+            version_mngr.version_check()
+            status_code, status_message = version_mngr.update_status
 
         # display current version
         if display_version or update_flag:
@@ -376,7 +384,7 @@ if __name__ == '__main__':
         if display_version:
             version_mngr.display_changelog()
             raise ExitException(0)
-        
+
         # load config from yaml to dict using yaml
         config = load_yaml(config_file)
         downloader_config = config['DownloaderConfig']
@@ -517,7 +525,28 @@ if __name__ == '__main__':
         logger.info(f'{msg} Proceed to download? {proceed}')
 
         if proceed == 'y':
-            pass
+            # create a controller to support pause/resume and cancel
+            controller = DownloadController()
+            # add controller into downloader config so individual downloaders can check it
+            downloader_config['_controller'] = controller
+
+            # start a command listener thread to handle pause/cancel commands from user
+            def _command_listener(ctrl):
+                colprint('predefined', '\nDownload Controls: p = toggle pause/resume, c = cancel all downloads')
+                while not ctrl.is_cancelled():
+                    try:
+                        cmd = input().strip().lower()
+                    except Exception:
+                        break
+                    if cmd == 'p':
+                        if ctrl.is_paused():
+                            ctrl.resume(); colprint('predefined', 'Resumed downloads')
+                        else:
+                            ctrl.pause(); colprint('predefined', 'Paused downloads')
+                    elif cmd == 'c':
+                        ctrl.cancel(); colprint('predefined', 'Cancelling downloads...'); break
+
+            threading.Thread(target=_command_listener, args=(controller,), daemon=True).start()
         elif proceed == 'e':
             # option for user to edit his choices. hidden option for dev ;)
             new_selected_eps = get_ep_range(f"{selected_eps['start']}-{selected_eps['end']}", 'Edit')

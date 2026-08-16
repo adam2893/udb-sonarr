@@ -12,6 +12,7 @@ from functools import wraps
 from time import sleep
 from logging.handlers import RotatingFileHandler
 from subprocess import Popen, PIPE
+import threading
 
 
 # color themes
@@ -29,6 +30,34 @@ PRINT_THEMES = {
     'reset': '\033[0m'
 }
 DISPLAY_COLORS = True
+
+# Controller to manage pause/cancel across downloader threads
+class DownloadController:
+    def __init__(self):
+        # pause_event is set when running, cleared when paused
+        self.pause_event = threading.Event()
+        self.pause_event.set()
+        # cancel_event is set when user requests cancellation
+        self.cancel_event = threading.Event()
+
+    def pause(self):
+        self.pause_event.clear()
+
+    def resume(self):
+        self.pause_event.set()
+
+    def is_paused(self):
+        return not self.pause_event.is_set()
+
+    def wait_if_paused(self):
+        # Blocks until resumed. Returns immediately if not paused.
+        self.pause_event.wait()
+
+    def cancel(self):
+        self.cancel_event.set()
+
+    def is_cancelled(self):
+        return self.cancel_event.is_set()
 
 # strip ANSI characters, to write to log file
 strip_ansi = lambda text: re.sub(r'\x1b\[[0-9;]*m', '', text)
@@ -50,6 +79,8 @@ class VersionManager():
     def __init__(self):
         self.parse_version = lambda version: tuple(map(int, (version.split('.') + ['0', '0'])[:3]))
         self.current_version = self.get_current_version()
+
+    def version_check(self):
         self.latest_changelog = self.get_latest_changelog()
         if self.latest_changelog:
             self.latest_version = next(iter(self.latest_changelog.keys()))

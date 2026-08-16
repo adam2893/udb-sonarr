@@ -40,6 +40,9 @@ class BaseDownloader():
         # create a requests session and use across to re-use cookies
         self.req_session = session if session else requests.Session()
 
+        # Controller (optional) to support pause/cancel. Provided via dl_config['_controller']
+        self.controller = dl_config.get('_controller') if isinstance(dl_config, dict) else None
+
         # set http client usage based on config. As on Feb 21 2025, kisskh works with only http.client
         self.use_http_client = dl_config.get('use_http_client', False)
 
@@ -183,12 +186,23 @@ class BaseDownloader():
             with open(chunk_file, 'wb') as f:
                 if isinstance(response, http.client.HTTPResponse):
                     while True:
+                        # support pause/cancel
+                        if self.controller:
+                            if self.controller.is_cancelled():
+                                return (f'ERROR: Chunk download cancelled [{chunk_name}]', 0)
+                            self.controller.wait_if_paused()
+
                         chunk = response.read(self.chunk_size)
                         if not chunk:
                             break
                         size += f.write(chunk)
                 else:
                     for chunk in response.iter_content(self.chunk_size):
+                        if self.controller:
+                            if self.controller.is_cancelled():
+                                return (f'ERROR: Chunk download cancelled [{chunk_name}]', 0)
+                            self.controller.wait_if_paused()
+
                         if chunk:
                             size += f.write(chunk)
 
@@ -217,10 +231,24 @@ class BaseDownloader():
         with tqdm(**metadata) as progress:
             # parallelize download of segments/chunks using a threadpool
             with ThreadPoolExecutor(max_workers=self.concurrency, thread_name_prefix=self.thread_name_prefix) as executor:
-                results = [ executor.submit(download_func, ts_url) for ts_url in urls ]
+                futures = [ executor.submit(download_func, ts_url) for ts_url in urls ]
 
-                for result in as_completed(results):
-                    status, size = result.result()
+                for future in as_completed(futures):
+                    # if user cancelled, try to cancel remaining futures and abort
+                    if self.controller and self.controller.is_cancelled():
+                        for f in futures:
+                            if not f.done():
+                                try:
+                                    f.cancel()
+                                except:
+                                    pass
+                        raise Exception('Download cancelled by user')
+
+                    try:
+                        status, size = future.result()
+                    except Exception as e:
+                        status, size = (f'ERROR: {e}', 0)
+
                     if 'ERROR' in status:
                         self._colprint('error', status)
                         failed_segments += 1
