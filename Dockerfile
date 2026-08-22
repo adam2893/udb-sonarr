@@ -23,10 +23,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy source
 COPY . .
 
-# Default config is provided via the example; real config should be
-# volume-mounted at /app/config_sonarr.yaml (see docker-compose.yml)
+# Config directory — mount your config_sonarr.yaml here.
+# Using a directory (/config) instead of a single file so the container
+# works cleanly with Unraid's GUI, docker-compose, and plain docker run.
+RUN mkdir -p /config /tv /downloads
 ENV PYTHONUNBUFFERED=1
+ENV CONFIG_FILE=/config/config_sonarr.yaml
 
-# Entrypoint: run the daemon with a mounted config
+# Entrypoint: run the daemon with the mounted config
 ENTRYPOINT ["python3", "udb_sonarr.py"]
-CMD ["-c", "/app/config_sonarr.yaml"]
+CMD ["-c", "/config/config_sonarr.yaml"]

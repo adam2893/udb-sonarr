@@ -1,0 +1,50 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>UDB-Sonarr</Name>
+  <Description>Auto-download missing Sonarr episodes from Asian streaming sites (KissKh, AnimePahe, Asiaflix)</Description>
+  <Overview>UDB-Sonarr polls Sonarr for monitored series with missing episodes, searches KissKh / AnimePahe / Asiaflix, downloads into Sonarr's library folders, and triggers a rescan so Sonarr imports them.
+
+Requires a running Sonarr instance. Put your config_sonarr.yaml inside the config path before first start (copy from the repo: config_sonarr.yaml.example).
+
+WARNING: downloads are placed directly into Sonarr's media folders — the /tv mount MUST be the same path Sonarr uses, or imports will fail.</Overview>
+  <Category>MediaApp:Video:</Category>
+  <TemplateURL>https://raw.githubusercontent.com/adam2893/udb-sonarr/main/unraid/udb-sonarr.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/adam2893/udb-sonarr/main/images/icon.png</Icon>
+  <Repository>ghcr.io/adam2893/udb-sonarr:latest</Repository>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/adam2893/udb-sonarr/issues</Support>
+  <Networking>
+    <Mode>host</Mode>
+  </Networking>
+  <Data>
+    <Volume>
+      <HostDir>/mnt/user/appdata/udb-sonarr/config</HostDir>
+      <ContainerDir>/config</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/user/media/tv</HostDir>
+      <ContainerDir>/tv</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/user/appdata/udb-sonarr/downloads</HostDir>
+      <ContainerDir>/downloads</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/user/appdata/udb-sonarr/logs</HostDir>
+      <ContainerDir>/app/logs</ContainerDir>
+      <Mode>rw</Mode>
+    </Volume>
+    <Variable>
+      <Key>TZ</Key>
+      <Value>America/New_York</Value>
+    </Variable>
+  </Data>
+  <Config Name="Config path" Target="/config" Default="/mnt/user/appdata/udb-sonarr/config" Mode="rw" Description="Contains config_sonarr.yaml (copy from config_sonarr.yaml.example)." Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="TV library" Target="/tv" Default="/mnt/user/media/tv" Mode="rw" Description="Sonarr's media library. MUST match the path Sonarr sees (e.g. /mnt/user/media/tv)." Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Downloads" Target="/downloads" Default="/mnt/user/appdata/udb-sonarr/downloads" Mode="rw" Description="Temp download area (optional)." Type="Path" Display="always" Required="false" Mask="false"/>
+  <Config Name="Logs" Target="/app/logs" Default="/mnt/user/appdata/udb-sonarr/logs" Mode="rw" Description="Daemon log files (optional)." Type="Path" Display="always" Required="false" Mask="false"/>
+  <Config Name="Timezone" Target="TZ" Default="America/New_York" Mode="" Description="Container timezone (e.g. America/New_York, Europe/London)." Type="Variable" Display="always" Required="false" Mask="false"/>
+</Container>

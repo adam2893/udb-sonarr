@@ -4,12 +4,14 @@ services:
     container_name: udb-sonarr
     restart: unless-stopped
     volumes:
-      # Your real config (copy config_sonarr.yaml.example -> config_sonarr.yaml first)
-      - ./config_sonarr.yaml:/app/config_sonarr.yaml:ro
+      # Config directory — put config_sonarr.yaml inside ./config
+      # (copy config_sonarr.yaml.example -> config/config_sonarr.yaml first)
+      - ./config:/config
       # Where Sonarr stores its media. MUST match the paths Sonarr itself sees,
       # so downloaded episodes land where Sonarr can import them.
       - /path/to/your/tv:/tv
-      # Logs from the daemon
+      # Temp downloads / logs
+      - ./downloads:/downloads
       - ./logs:/app/logs
     environment:
       - TZ=UTC

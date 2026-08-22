@@ -78,17 +78,56 @@ python3 udb_sonarr.py -c config_sonarr.yaml
 ## Docker
 
 ```bash
-cp config_sonarr.yaml.example config_sonarr.yaml
-# edit config_sonarr.yaml, then:
+mkdir -p config downloads logs
+cp config_sonarr.yaml.example config/config_sonarr.yaml
+# edit config/config_sonarr.yaml, then:
 docker compose up -d --build
 ```
 
-- Mounts `config_sonarr.yaml` (read-only) into the container
+- Mounts the `config/` directory at `/config` (contains `config_sonarr.yaml`)
 - Mounts your TV library at `/tv` — **must match the path Sonarr uses**, so downloaded episodes land where Sonarr can import them
 - Uses host networking so `localhost:8989` reaches a Sonarr running on the host
 - If Sonarr runs in Docker on a shared network instead, comment out `network_mode: host` and use the `networks:` section + `http://sonarr:8989` in config
 
 See `docker-compose.yml` for both networking options.
+
+Pre-built image: `ghcr.io/adam2893/udb-sonarr:latest` (built automatically by CI on every push to `main`).
+
+### Unraid (GUI setup)
+
+An Unraid template is included at [`unraid/udb-sonarr.xml`](unraid/udb-sonarr.xml). Install it via the Apps tab, or drop it into Unraid's user templates folder:
+
+```bash
+# From the Unraid terminal (or via SMB), install the template:
+cp unraid/udb-sonarr.xml /boot/config/plugins/dockerMan/templates-user/
+```
+
+Then in the Unraid web UI:
+
+1. **Apps → Search "udb-sonarr"** → install the template (or **Docker → Add Container** and select *udb-sonarr* from the template dropdown).
+2. **Edit the template** — set these paths (click the folder icons):
+   - **Config path** → `/mnt/user/appdata/udb-sonarr/config` (create it: `mkdir -p /mnt/user/appdata/udb-sonarr/config`)
+   - **TV library** → `/mnt/user/media/tv` — **must be the same path your Sonarr container uses for media** (e.g. if Sonarr maps `/tv` from `/mnt/user/media/tv`, use `/mnt/user/media/tv` here so files land in the right place)
+   - **Downloads** → `/mnt/user/appdata/udb-sonarr/downloads`
+   - **Logs** → `/mnt/user/appdata/udb-sonarr/logs`
+   - **Timezone** → your TZ (e.g. `Europe/London`)
+3. **Before starting the container**, create the config file on the Unraid console:
+   ```bash
+   mkdir -p /mnt/user/appdata/udb-sonarr/config
+   cp /boot/config/plugins/dockerMan/templates-user/udb-sonarr.xml /dev/null 2>/dev/null; true
+   # Fetch the example config:
+   curl -o /mnt/user/appdata/udb-sonarr/config/config_sonarr.yaml \
+     https://raw.githubusercontent.com/adam2893/udb-sonarr/main/config_sonarr.yaml.example
+   # Edit it (nano is available on Unraid):
+   nano /mnt/user/appdata/udb-sonarr/config/config_sonarr.yaml
+   ```
+   Set at minimum `SonarrConfig.url` (`http://localhost:8989` — host networking reaches Sonarr on the host) and `SonarrConfig.api_key` (Sonarr → Settings → General → API Key).
+4. **Apply** the template → Unraid pulls the image and starts the container.
+5. **Verify** — check the container log (Docker → click the container → Log). You should see `UDB-Sonarr daemon started` and a `Poll cycle started` line. First run will error if Sonarr is unreachable — fix the URL/API key in the config and restart the container.
+
+Notes:
+- The template uses **host networking** so the container can reach Sonarr via `localhost:8989` (and the media path is shared directly with the array). If you changed Sonarr's port, set `url` accordingly.
+- If Sonarr runs in its own container on a custom Unraid network (e.g. `br0` or a custom bridge), change the template's network type to that network and set `SonarrConfig.url` to Sonarr's container name (e.g. `http://sonarr:8989`).
 
 ## Configuration
 
