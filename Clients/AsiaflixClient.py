@@ -44,7 +44,9 @@ class AsiaflixClient(BaseClient):
             return search_results
 
         # each result card has 3 anchors: thumbnail (has img), the title
-        # anchor (long text) and a 'Watch now' anchor (short text)
+        # anchor (long text) and a 'Watch now' anchor (short text).
+        # Ignore UI-button labels that are not real titles.
+        UI_LABELS = {'watch now', 'watch', 'play', 'play now', 'download', 'more'}
         drama_cards = {}
         for anchor in soup.select('a[href^="/drama/"]'):
             href = anchor['href']
@@ -52,6 +54,8 @@ class AsiaflixClient(BaseClient):
             has_img = bool(anchor.find('img'))
             if href not in drama_cards:
                 drama_cards[href] = {'title': '', 'anchor': anchor}
+            if text.lower() in UI_LABELS:
+                continue
             if not has_img and len(text) > 3 and len(text) > len(drama_cards[href]['title']):
                 drama_cards[href]['title'] = text
 

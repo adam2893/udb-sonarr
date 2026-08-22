@@ -754,14 +754,19 @@ class BaseClient():
             '''
             Get the Chrome version dynamically
             '''
-            if '\\' in chrome_path:     # = Windows OS
-                is_match = lambda word: re.search(r'\d+\.\d+\.\d+\.\d+', word)
-                get_version = lambda path: [ is_match(d).group(0) for d in os.listdir(os.path.dirname(path)) if is_match(d) ][0]
-                version = get_version(chrome_path)
-            else:                       # = Linux OS
-                version = self._exec_cmd(f"'{chrome_path}' --version").strip('Google Chrome ').strip()
+            # Extract the first version number from the --version output.
+            # Handles "Google Chrome 151.0.0.0", "Chromium 151.0.0.0", etc.
+            version_output = self._exec_cmd(f"'{chrome_path}' --version")
+            version_match = re.search(r'(\d+)\.\d+\.\d+\.\d+', version_output)
+            if version_match:
+                return int(version_match.group(1))
 
-            return int(version.split('.')[0])
+            # fallback: first number found anywhere in the output
+            number_match = re.search(r'(\d+)', version_output)
+            if number_match:
+                return int(number_match.group(1))
+
+            raise Exception(f'Could not parse version from: {version_output.strip()}')
 
         self.logger.debug('Suppressing exit exception in Chrome driver')
         __suppress_exception_in_del(uc)
