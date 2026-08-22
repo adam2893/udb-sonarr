@@ -60,9 +60,23 @@ class UDBSonarrDaemon:
         self.dry_run = args.dry_run
         self.once = args.once
 
-        # Sonarr config
-        sonarr_config = config.get('SonarrConfig', {})
-        self.poll_interval = sonarr_config.get('poll_interval_minutes', 30) * 60
+        # Sonarr config — env vars (Unraid GUI container variables) override YAML
+        self.config.setdefault('SonarrConfig', {})
+        sonarr_config = self.config['SonarrConfig']
+        env_overrides = {
+            'UDB_SONARR_URL': 'url',
+            'UDB_API_KEY': 'api_key',
+            'UDB_QUALITY': 'quality',
+            'UDB_DOWNLOADER_TYPE': 'downloader_type',
+            'UDB_SITE_CLIENT': 'site_client',
+            'UDB_POLL_INTERVAL_MINUTES': 'poll_interval_minutes',
+            'UDB_ROOT_FOLDER': 'root_folder',
+        }
+        for env_key, cfg_key in env_overrides.items():
+            if os.environ.get(env_key):
+                sonarr_config[cfg_key] = os.environ[env_key]
+
+        self.poll_interval = int(sonarr_config.get('poll_interval_minutes', 30)) * 60
 
         # Downloader config (reused from UDB)
         self.downloader_config = config.get('DownloaderConfig', {})
@@ -90,6 +104,9 @@ class UDBSonarrDaemon:
         if isinstance(site_client_config, str):
             if site_client_config.lower() == 'all':
                 self.site_client_names = ['kisskh', 'animepahe', 'asiaflix']
+            elif ',' in site_client_config:
+                # e.g. env UDB_SITE_CLIENT="kisskh,asiaflix"
+                self.site_client_names = [s.strip().lower() for s in site_client_config.split(',') if s.strip()]
             else:
                 self.site_client_names = [site_client_config.lower()]
         elif isinstance(site_client_config, list):

@@ -97,20 +97,7 @@ Pre-built image: `ghcr.io/adam2893/udb-sonarr:latest` (built automatically by CI
 
 > **Not in Community Apps yet.** Until it's approved there, add it manually — it takes ~2 minutes, no template needed.
 
-**1. Create the config file** (Unraid terminal, or via SMB from your PC):
-
-```bash
-mkdir -p /mnt/user/appdata/udb-sonarr/config
-curl -o /mnt/user/appdata/udb-sonarr/config/config_sonarr.yaml \
-  https://raw.githubusercontent.com/adam2893/udb-sonarr/main/config_sonarr.yaml.example
-nano /mnt/user/appdata/udb-sonarr/config/config_sonarr.yaml
-```
-
-Set at minimum:
-- `url: http://localhost:8989` (host networking reaches Sonarr on the host)
-- `api_key: <your Sonarr key>` (Sonarr → Settings → General → API Key)
-
-**2. Add the container** — Unraid web UI → **Docker → Add Container**:
+**1. Add the container** — Unraid web UI → **Docker → Add Container**:
 
 | Field | Value |
 |---|---|
@@ -124,15 +111,29 @@ Paths (click **Add another Path** for each):
 - Container Path `/downloads` → Host Path `/mnt/user/appdata/udb-sonarr/downloads` *(optional)*
 - Container Path `/app/logs` → Host Path `/mnt/user/appdata/udb-sonarr/logs` *(optional)*
 
-Variable: `TZ` = your timezone (e.g. `America/New_York`)
+**2. Set the settings in the GUI variables** — click **Add another Variable** for each:
+
+| Variable | Value | What it controls |
+|---|---|---|
+| `TZ` | `America/New_York` | timezone |
+| `UDB_SONARR_URL` | `http://localhost:8989` | Sonarr address |
+| `UDB_API_KEY` | *(your key)* | Sonarr → Settings → General → API Key |
+| `UDB_QUALITY` | `1080` | max resolution: `360` / `480` / `720` / `1080` |
+| `UDB_DOWNLOADER_TYPE` | `udb` | download engine: `udb` or `yt-dlp` |
+| `UDB_SITE_CLIENT` | `all` | `all`, or comma-separated: `kisskh,animepahe,asiaflix` |
+| `UDB_POLL_INTERVAL_MINUTES` | `30` | how often to check Sonarr |
+
+> **Config file optional:** if `UDB_SONARR_URL` + `UDB_API_KEY` are set as variables, you don't need `config_sonarr.yaml` at all — the daemon runs on defaults + variables. The `/config` path only matters if you want advanced settings (season mappings, client-specific options, `downloader_type: yt-dlp`).
 
 Click **Apply** — Unraid pulls the image and starts the container.
 
-**3. Verify** — Docker tab → click the container → **Log**. You should see `UDB-Sonarr daemon started` and a `Poll cycle started` line. If it errors about Sonarr, fix the URL/API key in the config and restart the container.
+**3. Change settings later** — Docker tab → click the `udb-sonarr` container → **Edit** → change any variable → **Apply** (container restarts automatically).
+
+**4. Verify** — Docker tab → click the container → **Log**. You should see `UDB-Sonarr daemon started` and a `Poll cycle started` line. If it errors about Sonarr, fix the URL/API key variable and restart.
 
 **Notes**
-- Host networking means the container reaches Sonarr at `localhost:8989`. If Sonarr runs in its own container on a custom Unraid network, set Network type to that network and `url` to `http://sonarr:8989`.
-- An optional Unraid template is included at [`unraid/udb-sonarr.xml`](unraid/udb-sonarr.xml) — copy it to `/boot/config/plugins/dockerMan/templates-user/` and it'll appear in the template dropdown when adding a container.
+- Host networking means the container reaches Sonarr at `localhost:8989`. If Sonarr runs in its own container on a custom Unraid network, set Network type to that network and `UDB_SONARR_URL` to `http://sonarr:8989`.
+- An optional Unraid template is included at [`unraid/udb-sonarr.xml`](unraid/udb-sonarr.xml) — copy it to `/boot/config/plugins/dockerMan/templates-user/` and it'll appear in the template dropdown when adding a container, with all the above variables pre-filled.
 
 ## Configuration
 

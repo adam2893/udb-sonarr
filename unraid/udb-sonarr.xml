@@ -41,10 +41,40 @@ WARNING: downloads are placed directly into Sonarr's media folders — the /tv m
       <Key>TZ</Key>
       <Value>America/New_York</Value>
     </Variable>
+    <Variable>
+      <Key>UDB_SONARR_URL</Key>
+      <Value>http://localhost:8989</Value>
+    </Variable>
+    <Variable>
+      <Key>UDB_API_KEY</Key>
+      <Value></Value>
+    </Variable>
+    <Variable>
+      <Key>UDB_QUALITY</Key>
+      <Value>1080</Value>
+    </Variable>
+    <Variable>
+      <Key>UDB_DOWNLOADER_TYPE</Key>
+      <Value>udb</Value>
+    </Variable>
+    <Variable>
+      <Key>UDB_SITE_CLIENT</Key>
+      <Value>all</Value>
+    </Variable>
+    <Variable>
+      <Key>UDB_POLL_INTERVAL_MINUTES</Key>
+      <Value>30</Value>
+    </Variable>
   </Data>
-  <Config Name="Config path" Target="/config" Default="/mnt/user/appdata/udb-sonarr/config" Mode="rw" Description="Contains config_sonarr.yaml (copy from config_sonarr.yaml.example)." Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Config path" Target="/config" Default="/mnt/user/appdata/udb-sonarr/config" Mode="rw" Description="Contains config_sonarr.yaml (optional if all UDB_* variables are set)." Type="Path" Display="always" Required="false" Mask="false"/>
   <Config Name="TV library" Target="/tv" Default="/mnt/user/media/tv" Mode="rw" Description="Sonarr's media library. MUST match the path Sonarr sees (e.g. /mnt/user/media/tv)." Type="Path" Display="always" Required="true" Mask="false"/>
   <Config Name="Downloads" Target="/downloads" Default="/mnt/user/appdata/udb-sonarr/downloads" Mode="rw" Description="Temp download area (optional)." Type="Path" Display="always" Required="false" Mask="false"/>
   <Config Name="Logs" Target="/app/logs" Default="/mnt/user/appdata/udb-sonarr/logs" Mode="rw" Description="Daemon log files (optional)." Type="Path" Display="always" Required="false" Mask="false"/>
   <Config Name="Timezone" Target="TZ" Default="America/New_York" Mode="" Description="Container timezone (e.g. America/New_York, Europe/London)." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Sonarr URL" Target="UDB_SONARR_URL" Default="http://localhost:8989" Mode="" Description="Sonarr API URL (default: http://localhost:8989)." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Sonarr API key" Target="UDB_API_KEY" Default="" Mode="" Description="Sonarr API key (Settings > General > API Key)." Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="Quality" Target="UDB_QUALITY" Default="1080" Mode="" Description="Max resolution: 360 / 480 / 720 / 1080." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Downloader type" Target="UDB_DOWNLOADER_TYPE" Default="udb" Mode="" Description="udb (built-in) or yt-dlp." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Site clients" Target="UDB_SITE_CLIENT" Default="all" Mode="" Description="all, or comma-separated: kisskh,animepahe,asiaflix." Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Poll interval (min)" Target="UDB_POLL_INTERVAL_MINUTES" Default="30" Mode="" Description="How often to check Sonarr, in minutes." Type="Variable" Display="always" Required="false" Mask="false"/>
 </Container>
