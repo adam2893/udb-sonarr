@@ -24,8 +24,12 @@ class BaseDownloader():
         # set downloader configuration
         self.out_file = ep_details['episodeName']
         self.out_dir = dl_config['download_dir']
-        # add extra folder for season
-        if ep_details.get('type', '') == 'tv':
+        # add extra folder for season — UNLESS the caller (UDB-Sonarr daemon)
+        # already built the exact Sonarr season folder ("Season 01/") and
+        # passed it as download_dir. The daemon sets use_season_folder=False;
+        # without this, 'type=tv' would nest files at
+        # "Season 01/Season-1/..." which Sonarr never scans.
+        if dl_config.get('use_season_folder', True) and ep_details.get('type', '') == 'tv':
             self.out_dir = f"{self.out_dir}{os.sep}Season-{ep_details['season']}"
         self.concurrency = None if dl_config.get('concurrency_per_file', 'auto') == 'auto' else dl_config['concurrency_per_file']
         self.parent_temp_dir = os.path.join(f'{self.out_dir}', 'temp_dir') if dl_config.get('temp_download_dir', 'auto') == 'auto' else dl_config['temp_download_dir']

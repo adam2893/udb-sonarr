@@ -633,6 +633,7 @@ class UDBSonarrDaemon:
             # Set up download config for this episode
             dl_config = dict(self.downloader_config)
             dl_config['download_dir'] = season_folder
+            dl_config['use_season_folder'] = False  # daemon already built "Season 01/"
             dl_config['_controller'] = DownloadController()
 
             # Build episode details dict for UDB's downloader
