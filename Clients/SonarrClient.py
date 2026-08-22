@@ -242,12 +242,26 @@ class SonarrClient:
         '''
         Get the target path for a series.
         Uses series.path from Sonarr, or overrides with root_folder from config.
+
+        When root_folder is set, the folder NAME is taken from Sonarr's own
+        series.path (the last path component) rather than reconstructed from
+        title + year — Sonarr titles often already contain the year in
+        parentheses ("Us (2025)"), and rebuilding "Us (2025) (2025)" produced
+        a folder Sonarr never scans.
         '''
         if self.root_folder:
-            # Build path from root folder + series folder name
-            title = series.get('title', 'Unknown')
-            year = series.get('year', '')
-            folder_name = f'{title} ({year})' if year else title
+            # Prefer Sonarr's actual folder name so it matches exactly
+            sonarr_path = series.get('path', '')
+            if sonarr_path:
+                folder_name = sonarr_path.rstrip('/').split('/')[-1]
+            else:
+                # Fallback: build from title (+ year only if title lacks it)
+                title = series.get('title', 'Unknown')
+                year = series.get('year', '')
+                if year and f'({year})' not in title:
+                    folder_name = f'{title} ({year})'
+                else:
+                    folder_name = title
             # Sanitize for filesystem
             for char in ['/', '\\', '"', ':', '?', '|', '<', '>', '*']:
                 folder_name = folder_name.replace(char, '')
