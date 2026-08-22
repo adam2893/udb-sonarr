@@ -38,7 +38,9 @@ class SonarrClient:
             api_version = 'v3'
         self.api_version = api_version
         self.root_folder = config.get('root_folder')
-        self.request_timeout = config.get('request_timeout', 30)
+        # Longer timeout: rescan+import of many episodes can exceed 30s on a
+        # busy NAS, which caused false "PATH MISMATCH" reports.
+        self.request_timeout = config.get('request_timeout', 60)
         self.logger = logging.getLogger()
 
         self.api_base = f'{self.base_url}/api/{self.api_version}'
@@ -200,11 +202,13 @@ class SonarrClient:
         self.logger.warning(f'Sonarr: timed out waiting for command {command_id} ({timeout}s)')
         return False
 
-    def check_files_detected(self, series_id: int, expected_seasons: Dict[int, List[int]]) -> Dict[int, List[int]]:
+    def check_files_detected(self, series_id: int, expected_seasons: Dict[int, List[int]]) -> Optional[Dict[int, List[int]]]:
         '''
         After a rescan, verify which (season, episode) pairs Sonarr now sees.
         expected_seasons: { season: [episode_numbers...] }
-        Returns { season: [detected_episode_numbers...] }.
+        Returns { season: [detected_episode_numbers...] }, or None if the
+        verification itself failed (Sonarr unreachable/timeout) — the caller
+        must not treat None as "0 files detected".
         '''
         detected = {season: [] for season in expected_seasons}
         try:
@@ -220,16 +224,18 @@ class SonarrClient:
             )
         except Exception as e:
             self.logger.error(f'Failed to verify files detected for series {series_id}: {e}')
+            return None  # verification failed, not "nothing found"
         return detected
 
     def get_imported_episode_paths(self, series_id: int,
-                                   expected_seasons: Dict[int, List[int]]) -> Dict[Tuple[int, int], str]:
+                                   expected_seasons: Dict[int, List[int]]) -> Optional[Dict[Tuple[int, int], str]]:
         '''
         After a rescan/import, return the FINAL Sonarr path for each episode
         that now has a file. Sonarr renames/moves files during import, so
         this shows where they actually landed.
         expected_seasons: { season: [episode_numbers...] }
-        Returns { (season, episode): path } for episodes with files.
+        Returns { (season, episode): path } for episodes with files, or None
+        if the fetch itself failed (Sonarr unreachable/timeout).
         '''
         imported = {}
         try:
@@ -243,6 +249,7 @@ class SonarrClient:
                     imported[(season, ep_num)] = path
         except Exception as e:
             self.logger.error(f'Failed to fetch imported episode paths for series {series_id}: {e}')
+            return None  # fetch failed, not "no imports"
         return imported
 
     def trigger_refresh_series(self, series_id: int) -> Optional[Dict]:

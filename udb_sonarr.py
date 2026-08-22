@@ -490,11 +490,21 @@ class UDBSonarrDaemon:
                 self.logger.info(f'Triggering Sonarr rescan for [{series_title}]')
                 rescan_cmd = self.sonarr.trigger_rescan(series_id)
 
+                if rescan_cmd is None:
+                    # The rescan command could not even be triggered
+                    # (Sonarr unreachable / API timeout). Skip verification —
+                    # claiming PATH MISMATCH here would be a false alarm.
+                    self.logger.warning(
+                        f'Could not trigger Sonarr rescan for [{series_title}] '
+                        f'(Sonarr unreachable/timeout). Will re-trigger next cycle.'
+                    )
+                    continue
+
                 # Wait for the rescan command to actually COMPLETE before
                 # verifying — RescanSeries is async, and a fixed sleep can
                 # check hasFile before the scan/import finishes, producing
                 # false "PATH MISMATCH" errors.
-                if rescan_cmd and rescan_cmd.get('id'):
+                if rescan_cmd.get('id'):
                     self.sonarr.wait_for_command(rescan_cmd['id'], timeout=120)
                 else:
                     time.sleep(5)
@@ -507,6 +517,14 @@ class UDBSonarrDaemon:
                         expected.setdefault(season, []).append(ep_num)
                 if expected:
                     detected = self.sonarr.check_files_detected(series_id, expected)
+                    if detected is None:
+                        # Verification failed (Sonarr unreachable/timeout) —
+                        # NOT a path mismatch. Don't cry wolf.
+                        self.logger.warning(
+                            f'Could not verify imports with Sonarr for [{series_title}] '
+                            f'(Sonarr unreachable/timeout). Will re-check next cycle.'
+                        )
+                        continue
                     undetected = sum(
                         len([e for e in eps if e not in detected.get(s, [])])
                         for s, eps in expected.items()
@@ -521,6 +539,11 @@ class UDBSonarrDaemon:
                     # Report the FINAL Sonarr path for each imported episode
                     # (Sonarr renames/moves files during import).
                     imported = self.sonarr.get_imported_episode_paths(series_id, expected)
+                    if imported is None:
+                        self.logger.warning(
+                            f'Could not fetch import paths from Sonarr for [{series_title}] (unreachable/timeout).'
+                        )
+                        imported = {}
                     for (season, ep_num), path in sorted(imported.items()):
                         self.logger.info(
                             f'IMPORTED [{series_title}] S{season:02d}E{ep_num:02d} -> {path}'
