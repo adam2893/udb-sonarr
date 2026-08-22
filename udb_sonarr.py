@@ -72,6 +72,7 @@ class UDBSonarrDaemon:
             'UDB_POLL_INTERVAL_MINUTES': 'poll_interval_minutes',
             'UDB_ROOT_FOLDER': 'root_folder',
             'UDB_TAGS': 'tags',
+            'UDB_TMDB_API_KEY': 'tmdb_api_key',
         }
         for env_key, cfg_key in env_overrides.items():
             if os.environ.get(env_key):
@@ -181,7 +182,7 @@ class UDBSonarrDaemon:
             raise ExitException(1)
 
     def init_matcher(self):
-        '''Initialize series/episode matcher.'''
+        '''Initialize series/episode matcher + optional TMDB alias lookup.'''
         sonarr_config = self.config.get('SonarrConfig', {})
         matcher_config = {
             'season_mappings': sonarr_config.get('season_mappings', {}),
@@ -189,6 +190,16 @@ class UDBSonarrDaemon:
             'verify_year': sonarr_config.get('verify_year', True),
         }
         self.matcher = SeriesMatcher(matcher_config)
+
+        # Optional TMDB integration: resolves alternate/original titles so the
+        # matcher can find shows whose site title differs from Sonarr's.
+        # Requires a free TMDB API key (https://www.themoviedb.org/settings/api)
+        tmdb_api_key = sonarr_config.get('tmdb_api_key', '')
+        self.tmdb_client = None
+        if tmdb_api_key:
+            from Clients.TmdbClient import TmdbClient
+            self.tmdb_client = TmdbClient(tmdb_api_key)
+            self.logger.info('TMDB alternate-title lookup enabled')
 
     # Map client names to their UDB config keys and import paths
     CLIENT_REGISTRY = {
@@ -261,8 +272,20 @@ class UDBSonarrDaemon:
                 self.logger.debug(f'No results on {client_name} for [{series_title}]')
                 continue
 
+            # Optional: fetch TMDB alternate titles to widen the match
+            # (helps when the site's title differs from Sonarr's, e.g. Thai BL)
+            extra_titles = []
+            if self.tmdb_client:
+                try:
+                    extra_titles = self.tmdb_client.get_series_aliases(
+                        tmdb_id=sonarr_series.get('tmdbId'),
+                        tvdb_id=sonarr_series.get('tvdbId'),
+                    )
+                except Exception as e:
+                    self.logger.debug(f'TMDB lookup failed for [{series_title}]: {e}')
+
             # Try to match
-            match = self.matcher.match_series(sonarr_series, search_results)
+            match = self.matcher.match_series(sonarr_series, search_results, extra_titles=extra_titles)
             if match:
                 _, matched_series = match
                 self.logger.info(f'Found [{series_title}] on {client_name} -> [{matched_series.get("title")}]')

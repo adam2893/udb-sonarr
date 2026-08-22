@@ -52,21 +52,33 @@ class SeriesMatcher:
         return SequenceMatcher(None, a, b).ratio()
 
     def match_series(self, sonarr_series: Dict[str, Any],
-                     kisskh_results: Dict[int, Dict]) -> Optional[Tuple[int, Dict]]:
+                     kisskh_results: Dict[int, Dict],
+                     extra_titles: Optional[List[str]] = None) -> Optional[Tuple[int, Dict]]:
         '''
         Match a Sonarr series to the best KissKh search result.
 
         Args:
             sonarr_series: Sonarr series dict with title, year, etc.
             kisskh_results: dict from KissKhClient.search() { index: { title, year, series_id, ... } }
+            extra_titles: optional list of alternate titles (e.g. TMDB
+                original/alternate titles) to match against too. Useful when
+                the site's title differs from Sonarr's (localized dramas).
 
         Returns:
             Tuple of (kisskh_index, kisskh_result_dict) or None if no match found.
         '''
-        sonarr_title = self._normalize_title(sonarr_series.get('title', ''))
+        # Build the set of candidate sonarr titles: primary + TMDB aliases
+        sonarr_titles = [self._normalize_title(sonarr_series.get('title', ''))]
+        for alt in (extra_titles or []):
+            alt_norm = self._normalize_title(alt)
+            if alt_norm and alt_norm not in sonarr_titles:
+                sonarr_titles.append(alt_norm)
         sonarr_year = str(sonarr_series.get('year', ''))
 
-        self.logger.debug(f'Matching Sonarr series [{sonarr_title}] ({sonarr_year}) against {len(kisskh_results)} KissKh results')
+        self.logger.debug(
+            f'Matching Sonarr series [{sonarr_titles}] ({sonarr_year}) against '
+            f'{len(kisskh_results)} results'
+        )
 
         best_match = None
         best_score = 0.0
@@ -75,8 +87,11 @@ class SeriesMatcher:
             kisskh_title = self._normalize_title(result.get('title', ''))
             kisskh_year = str(result.get('year', 'XXXX'))
 
-            # Calculate title similarity
-            title_score = self._similarity(sonarr_title, kisskh_title)
+            # Best similarity across all candidate sonarr titles
+            title_score = max(
+                (self._similarity(t, kisskh_title) for t in sonarr_titles),
+                default=0.0
+            )
 
             # Year bonus: if years match, boost the score
             year_match = sonarr_year == kisskh_year and sonarr_year != ''
@@ -85,14 +100,14 @@ class SeriesMatcher:
             elif self.verify_year and sonarr_year != '' and kisskh_year != 'XXXX' and not year_match:
                 title_score -= 0.2  # year mismatch penalty
 
-            self.logger.debug(f'  KissKh [{result.get("title")}] ({kisskh_year}): title_score={title_score:.2f}')
+            self.logger.debug(f'  Result [{result.get("title")}] ({kisskh_year}): title_score={title_score:.2f}')
 
             if title_score > best_score:
                 best_score = title_score
                 best_match = (idx, result)
 
         if best_match and best_score >= self.match_threshold:
-            self.logger.info(f'Series matched: Sonarr [{sonarr_series.get("title")}] -> KissKh [{best_match[1].get("title")}] (score: {best_score:.2f})')
+            self.logger.info(f'Series matched: Sonarr [{sonarr_series.get("title")}] -> [{best_match[1].get("title")}] (score: {best_score:.2f})')
             return best_match
         else:
             self.logger.warning(f'No match found for [{sonarr_series.get("title")}] (best score: {best_score:.2f}, threshold: {self.match_threshold})')

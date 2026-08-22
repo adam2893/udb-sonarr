@@ -123,6 +123,7 @@ Paths (click **Add another Path** for each):
 | `UDB_SITE_CLIENT` | `all` | `all`, or comma-separated: `kisskh,animepahe,asiaflix` |
 | `UDB_POLL_INTERVAL_MINUTES` | `30` | how often to check Sonarr |
 | `UDB_TAGS` | *(optional)* | only process series with these Sonarr tags, comma-separated (e.g. `asiandrama,kdrama`) — leave empty for all |
+| `UDB_TMDB_API_KEY` | *(optional)* | free TMDB key (themoviedb.org → Settings → API) — enables matching by alternate/original titles |
 
 > **Config file optional:** if `UDB_SONARR_URL` + `UDB_API_KEY` are set as variables, you don't need `config_sonarr.yaml` at all — the daemon runs on defaults + variables. The `/config` path only matters if you want advanced settings (season mappings, client-specific options, `downloader_type: yt-dlp`).
 
@@ -155,6 +156,10 @@ SonarrConfig:
 ```
 
 **Tag filtering:** the daemon only processes series that carry at least one of the configured `tags`. In Sonarr, open a series → **Tags** → add a tag (e.g. `asiandrama`), then set `tags: [asiandrama]` here (or `UDB_TAGS=asiandrama` in Unraid). Anything untagged — like Western shows — is skipped. Use multiple tags as an OR filter (`["asiandrama", "kdrama"]`).
+
+**TMDB matching (optional but recommended):** the daemon matches Sonarr series to site search results by title + year. For shows whose site title differs from Sonarr's (common with Thai BL/localized dramas), add a free [TMDB API key](https://www.themoviedb.org/settings/api) (`tmdb_api_key` or `UDB_TMDB_API_KEY`). The daemon then fetches the show's original/alternate titles from TMDB and matches the site results against all of them — so "Us (2025)" can match a site listing under its alternate title. Sonarr v4 series carry a `tmdbId` directly; v3 falls back to resolving `tvdbId` via TMDB's `/find` endpoint.
+
+**Download backends:** `downloader_type: udb` (default) uses UDB's built-in HLS downloader — it grabs the m3u8 and ffmpeg-muxes to mp4. `downloader_type: yt-dlp` uses a yt-dlp wrapper (better for Asiaflix's embed hosts like streamtape/mixdrop, which resolve to streams via yt-dlp; direct `.m3u8` links route through the ffmpeg pipeline either way). Asiaflix downloads try every available source host in order until one succeeds.
 
 **Multi-season shows:** KissKh/Asiaflix use flat episode numbering while Sonarr uses S01E05. Single-season shows map 1:1 automatically. For multi-season shows, add `season_mappings` keyed by Sonarr series ID:
 

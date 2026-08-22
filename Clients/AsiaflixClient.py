@@ -237,6 +237,12 @@ class AsiaflixClient(BaseClient):
                 continue
             url = urls[0]
 
+            # Direct .m3u8 links go through UDB's ffmpeg HLS pipeline;
+            # embed-page links (streamtape/mixdrop/vidmoly) use the yt-dlp
+            # backend, which resolves the page to the stream.
+            is_direct_m3u8 = url.split('?')[0].endswith('.m3u8')
+            dl_type = 'hls' if is_direct_m3u8 else 'embed'
+
             # single '1080' numeric key. the yt-dlp backend resolves
             # the actual quality itself, so keep it resolution-agnostic.
             # Alternate source URLs (streamtape mirrors etc.) are included
@@ -245,7 +251,7 @@ class AsiaflixClient(BaseClient):
                 '1080': {
                     'downloadLink': url,
                     'alternateLinks': urls[1:],
-                    'downloadType': 'embed',
+                    'downloadType': dl_type,
                     'resolution_size': 'embed',
                     'duration': 'NA'
                 }

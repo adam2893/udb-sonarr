@@ -47,6 +47,13 @@ SonarrConfig:
   # Accepts a list or comma-separated string.
   tags: []
 
+  # TMDB API key (optional but recommended).
+  # Used to fetch a show's original/alternate titles so the matcher can find
+  # shows whose site title differs from Sonarr's (common for Thai BL dramas).
+  # Get a free key: https://www.themoviedb.org/settings/api
+  # Sonarr v4 series carry a tmdbId; v3 falls back to tvdbId via TMDB /find.
+  tmdb_api_key: ''
+
   # Series matching settings
   match_threshold: 0.6        # Minimum title similarity (0.0-1.0)
   verify_year: true           # Boost score if release years match
