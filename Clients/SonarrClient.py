@@ -10,7 +10,8 @@ class SonarrClient:
     Sonarr v3/v4 API client for polling monitored series, missing episodes,
     and triggering series rescans after downloads complete.
 
-    Works with Sonarr v3 (/api/v3/) and v4 (/api/v4/) endpoints.
+    Works with Sonarr v3 and v4 — both expose the API under /api/v3/
+    (the API version has never been bumped to v4).
     '''
 
     def __init__(self, config: Dict[str, Any]):
@@ -19,13 +20,23 @@ class SonarrClient:
             config: dict with keys:
                 - url: Sonarr base URL (e.g. http://localhost:8989)
                 - api_key: Sonarr API key
-                - api_version: 'v3' or 'v4' (default: 'v3')
+                - api_version: always 'v3'. Sonarr v4 still uses /api/v3/
+                  (a 'v4' value is normalized to 'v3' with a warning)
                 - root_folder: override root folder path (optional, uses series.path by default)
                 - request_timeout: HTTP timeout in seconds (default: 30)
         '''
         self.base_url = config['url'].rstrip('/')
         self.api_key = config['api_key']
-        self.api_version = config.get('api_version', 'v3')
+        # Sonarr's API path is /api/v3/ on both Sonarr v3 and v4.
+        api_version = config.get('api_version', 'v3').lower().lstrip('/')
+        if api_version != 'v3':
+            self.logger = logging.getLogger()
+            self.logger.warning(
+                f'Sonarr API version is always v3 (v3 and v4 both use /api/v3/). '
+                f'Ignoring configured api_version "{api_version}"'
+            )
+            api_version = 'v3'
+        self.api_version = api_version
         self.root_folder = config.get('root_folder')
         self.request_timeout = config.get('request_timeout', 30)
         self.logger = logging.getLogger()

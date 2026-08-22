@@ -11,7 +11,9 @@ SonarrConfig:
   # API key - find in Sonarr: Settings > General > API Key
   api_key: YOUR_SONARR_API_KEY_HERE
   
-  # API version: 'v3' for Sonarr v3, 'v4' for Sonarr v4
+  # Sonarr API path. Always 'v3' — Sonarr v3 AND v4 both use /api/v3/
+  # (the API version has never been bumped to v4). If set to 'v4' it is
+  # ignored with a warning.
   api_version: v3
   
   # Root folder override (optional)
