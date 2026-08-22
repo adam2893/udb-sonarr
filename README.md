@@ -118,7 +118,7 @@ Paths (click **Add another Path** for each):
 | `TZ` | `America/New_York` | timezone |
 | `UDB_SONARR_URL` | `http://localhost:8989` | Sonarr address |
 | `UDB_API_KEY` | *(your key)* | Sonarr → Settings → General → API Key |
-| `UDB_QUALITY` | `1080` | max resolution: `360` / `480` / `720` / `1080` |
+| `UDB_QUALITY` | `1080` | max resolution: `360` / `480` / `720` / `1080`, or a preference list like `1080,720` (prefer 1080, fall back to 720) |
 | `UDB_DOWNLOADER_TYPE` | `udb` | download engine: `udb` or `yt-dlp` |
 | `UDB_SITE_CLIENT` | `all` | `all`, or comma-separated: `kisskh,animepahe,asiaflix` |
 | `UDB_POLL_INTERVAL_MINUTES` | `30` | how often to check Sonarr |
@@ -146,7 +146,7 @@ Key options:
 SonarrConfig:
   url: http://localhost:8989
   api_key: YOUR_SONARR_API_KEY
-  quality: 1080                    # 360 / 480 / 720 / 1080
+  quality: 1080                    # 360 / 480 / 720 / 1080, or preference list: 1080,720
   downloader_type: udb             # udb | yt-dlp
   site_client: all                 # all | kisskh | animepahe | asiaflix | [list]
   poll_interval_minutes: 30

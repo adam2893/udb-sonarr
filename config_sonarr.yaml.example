@@ -24,7 +24,9 @@ SonarrConfig:
   # Poll interval in minutes (how often to check for missing episodes)
   poll_interval_minutes: 30
   
-  # Quality preference: 360, 480, 720, or 1080
+  # Quality preference: 360, 480, 720, or 1080.
+  # Can be a single value or a comma-separated preference list
+  # (e.g. "1080,720" = prefer 1080, fall back to 720).
   quality: 1080
 
   # Downloader backend:

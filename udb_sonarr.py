@@ -95,8 +95,19 @@ class UDBSonarrDaemon:
         self.downloader_config.setdefault('concurrency_per_file', 'auto')
         self.downloader_config.setdefault('request_timeout', 30)
 
-        # Quality preference
-        self.quality = sonarr_config.get('quality', '1080')
+        # Quality preference(s) — single value or comma-separated list.
+        # e.g. "1080" or "1080,720" (prefer 1080, fall back to 720).
+        # Accepts YAML list or comma-separated env value (UDB_QUALITY).
+        quality_cfg = sonarr_config.get('quality', '1080')
+        if isinstance(quality_cfg, list):
+            quality_cfg = [str(q).strip() for q in quality_cfg]
+        else:
+            quality_cfg = [q.strip() for q in str(quality_cfg).split(',')]
+        self.qualities = [q for q in quality_cfg if q]
+        if not self.qualities:
+            self.qualities = ['1080']
+        # primary quality kept for display/back-compat
+        self.quality = self.qualities[0]
 
         # Downloader backend: 'udb' (UDB's HLSDownloader/BaseDownloader) or
         # 'yt-dlp' (kisskh-dl-style yt-dlp wrapper — more robust, needs yt-dlp installed)
@@ -424,10 +435,17 @@ class UDBSonarrDaemon:
                 self.logger.error(f'No resolutions available for episode {ep_num}')
                 return False
 
-            # Select best resolution matching our quality preference
-            target_res = str(self.quality)
-            selected_res = client._resolution_selector(available_resolutions, target_res,
-                                                       client.selector_strategy)
+            # Select best resolution matching our quality preference(s).
+            # Try each preferred quality in order (e.g. 1080 then 720);
+            # fall back to the site client's selector strategy if none match.
+            selected_res = None
+            for q in self.qualities:
+                if q in available_resolutions:
+                    selected_res = q
+                    break
+            if not selected_res:
+                selected_res = client._resolution_selector(available_resolutions, self.qualities[0],
+                                                           client.selector_strategy)
             if not selected_res:
                 selected_res = available_resolutions[0]
 
@@ -544,7 +562,7 @@ class UDBSonarrDaemon:
         colprint('results', f'  Sonarr: {self.config["SonarrConfig"]["url"]}')
         colprint('results', f'  Site clients: {", ".join(self.site_clients.keys())}')
         colprint('results', f'  Downloader: {self.downloader_type}')
-        colprint('results', f'  Quality: {self.quality}p')
+        colprint('results', f'  Quality: {"/".join(self.qualities)}p')
         colprint('results', f'  Poll interval: {self.poll_interval // 60} minutes')
         colprint('results', f'  Mode: {"DRY-RUN" if self.dry_run else "ACTIVE"}')
         colprint('results', f'  Once: {self.once}')
