@@ -98,6 +98,43 @@ class SonarrClient:
             self.logger.error(f'Failed to fetch series from Sonarr: {e}')
             return []
 
+    def get_tags(self) -> Dict[str, int]:
+        '''
+        Get Sonarr tags as {label_lower: id} mapping.
+        Series carry tag IDs; use this to resolve configured tag labels to IDs.
+        '''
+        try:
+            tags = self._request('GET', 'tag')
+            return {str(t['label']).lower(): t['id'] for t in tags}
+        except Exception as e:
+            self.logger.error(f'Failed to fetch tags from Sonarr: {e}')
+            return {}
+
+    def filter_series_by_tags(self, series_list: List[Dict[str, Any]],
+                              tag_labels: List[str]) -> List[Dict[str, Any]]:
+        '''
+        Keep only series that have at least one of the given tag labels.
+        tag_labels: lower-case tag labels (e.g. ['asiandrama']).
+        Returns the filtered list; empty tag_labels returns everything.
+        '''
+        if not tag_labels:
+            return series_list
+
+        tag_map = self.get_tags()
+        wanted_ids = {tag_map[label] for label in tag_labels if label in tag_map}
+        if not wanted_ids:
+            self.logger.warning(
+                f'No Sonarr tags match configured filter {tag_labels}. '
+                f'Available tags: {sorted(tag_map.keys())}'
+            )
+            return []
+
+        filtered = [s for s in series_list if set(s.get('tags', [])) & wanted_ids]
+        skipped = len(series_list) - len(filtered)
+        if skipped:
+            self.logger.info(f'Tag filter [{", ".join(tag_labels)}]: skipped {skipped} series without matching tags')
+        return filtered
+
     def get_missing_episodes(self, series_id: int) -> List[Dict[str, Any]]:
         '''
         Get monitored episodes without files for a given series.

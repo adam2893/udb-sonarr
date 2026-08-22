@@ -39,6 +39,12 @@ SonarrConfig:
   # 'all' tries each client in order until one has the series
   site_client: all
   
+  # Only process series that carry at least one of these Sonarr tags.
+  # Tag shows in Sonarr (e.g. "asiandrama") and list the tag here to limit
+  # the daemon to those shows. Empty list = no filtering (process everything).
+  # Accepts a list or comma-separated string.
+  tags: []
+
   # Series matching settings
   match_threshold: 0.6        # Minimum title similarity (0.0-1.0)
   verify_year: true           # Boost score if release years match

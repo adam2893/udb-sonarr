@@ -122,6 +122,7 @@ Paths (click **Add another Path** for each):
 | `UDB_DOWNLOADER_TYPE` | `udb` | download engine: `udb` or `yt-dlp` |
 | `UDB_SITE_CLIENT` | `all` | `all`, or comma-separated: `kisskh,animepahe,asiaflix` |
 | `UDB_POLL_INTERVAL_MINUTES` | `30` | how often to check Sonarr |
+| `UDB_TAGS` | *(optional)* | only process series with these Sonarr tags, comma-separated (e.g. `asiandrama,kdrama`) — leave empty for all |
 
 > **Config file optional:** if `UDB_SONARR_URL` + `UDB_API_KEY` are set as variables, you don't need `config_sonarr.yaml` at all — the daemon runs on defaults + variables. The `/config` path only matters if you want advanced settings (season mappings, client-specific options, `downloader_type: yt-dlp`).
 
@@ -149,8 +150,11 @@ SonarrConfig:
   downloader_type: udb             # udb | yt-dlp
   site_client: all                 # all | kisskh | animepahe | asiaflix | [list]
   poll_interval_minutes: 30
+  tags: []                         # only process series with these Sonarr tags (e.g. ["asiandrama"]); [] = all
   season_mappings: {}              # multi-season episode offset overrides
 ```
+
+**Tag filtering:** the daemon only processes series that carry at least one of the configured `tags`. In Sonarr, open a series → **Tags** → add a tag (e.g. `asiandrama`), then set `tags: [asiandrama]` here (or `UDB_TAGS=asiandrama` in Unraid). Anything untagged — like Western shows — is skipped. Use multiple tags as an OR filter (`["asiandrama", "kdrama"]`).
 
 **Multi-season shows:** KissKh/Asiaflix use flat episode numbering while Sonarr uses S01E05. Single-season shows map 1:1 automatically. For multi-season shows, add `season_mappings` keyed by Sonarr series ID:
 

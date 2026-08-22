@@ -71,12 +71,21 @@ class UDBSonarrDaemon:
             'UDB_SITE_CLIENT': 'site_client',
             'UDB_POLL_INTERVAL_MINUTES': 'poll_interval_minutes',
             'UDB_ROOT_FOLDER': 'root_folder',
+            'UDB_TAGS': 'tags',
         }
         for env_key, cfg_key in env_overrides.items():
             if os.environ.get(env_key):
                 sonarr_config[cfg_key] = os.environ[env_key]
 
         self.poll_interval = int(sonarr_config.get('poll_interval_minutes', 30)) * 60
+
+        # Only process series that carry at least one of these Sonarr tags.
+        # Empty list = no filtering. Accepts YAML list or comma-separated env
+        # value (e.g. UDB_TAGS=asiandrama,kdrama).
+        tags_cfg = sonarr_config.get('tags', [])
+        if isinstance(tags_cfg, str):
+            tags_cfg = [t.strip() for t in tags_cfg.split(',') if t.strip()]
+        self.filter_tags = [str(t).strip().lower() for t in (tags_cfg or []) if str(t).strip()]
 
         # Downloader config (reused from UDB)
         self.downloader_config = config.get('DownloaderConfig', {})
@@ -268,6 +277,13 @@ class UDBSonarrDaemon:
         if not series_list:
             self.logger.info('No monitored series found in Sonarr')
             return
+
+        # Tag filter: only process series with at least one configured tag
+        if self.filter_tags:
+            series_list = self.sonarr.filter_series_by_tags(series_list, self.filter_tags)
+            if not series_list:
+                self.logger.info('No monitored series match the configured tags')
+                return
 
         total_downloaded = 0
         total_skipped = 0
