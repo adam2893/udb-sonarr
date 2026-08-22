@@ -305,6 +305,32 @@ class UDBSonarrDaemon:
                     except Exception as e:
                         self.logger.debug(f'TMDB lookup failed for [{series_title}]: {e}')
 
+                # Post-filter by country: drop results from wrong regions before scoring.
+                # KissKh's search API doesn't support country filtering, so we filter
+                # the results client-side. Only filter when both sides have country data
+                # — if Sonarr has no country or the result has no country, skip the check
+                # (don't be too aggressive).
+                sonarr_country = sonarr_series.get('countryCode') or sonarr_series.get('country') or ''
+                if sonarr_country and search_results:
+                    filtered = {}
+                    dropped = 0
+                    for idx, result in search_results.items():
+                        result_country = result.get('country') or ''
+                        if result_country and not SeriesMatcher._countries_match(sonarr_country, result_country):
+                            self.logger.debug(
+                                f'Post-filter: dropping [{result.get("title")}] ({result_country}) '
+                                f'— doesn\'t match Sonarr country ({sonarr_country})'
+                            )
+                            dropped += 1
+                            continue
+                        filtered[idx] = result
+                    if dropped:
+                        self.logger.info(
+                            f'Post-filter: dropped {dropped} result(s) from wrong region(s) '
+                            f'(Sonarr country: {sonarr_country})'
+                        )
+                    search_results = filtered
+
                 # Score all results; collect every above-threshold match.
                 # The best becomes the primary; the rest are "variants"
                 # (season-split entries) if they belong to the same show.
