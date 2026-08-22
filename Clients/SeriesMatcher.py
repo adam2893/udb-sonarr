@@ -115,21 +115,26 @@ class SeriesMatcher:
             Tuple of (kisskh_index, kisskh_result_dict) or None if no match found.
         '''
         scored = self.score_all_results(sonarr_series, kisskh_results, extra_titles)
-        if scored and scored[0][0] >= self.match_threshold:
-            score, idx, result = scored[0]
-            self.logger.info(f'Series matched: Sonarr [{sonarr_series.get("title")}] -> [{result.get("title")}] (score: {score:.2f})')
+        # Qualification is on the RAW title similarity — year/country bonuses
+        # only rank among qualifiers and cannot turn a different show into a match.
+        if scored and scored[0][3] >= self.match_threshold:
+            _, idx, result, raw = scored[0]
+            self.logger.info(f'Series matched: Sonarr [{sonarr_series.get("title")}] -> [{result.get("title")}] (raw title: {raw:.2f})')
             return (idx, result)
         else:
-            best = scored[0][0] if scored else 0.0
-            self.logger.warning(f'No match found for [{sonarr_series.get("title")}] (best score: {best:.2f}, threshold: {self.match_threshold})')
+            best = scored[0][3] if scored else 0.0
+            self.logger.warning(f'No match found for [{sonarr_series.get("title")}] (best raw title score: {best:.2f}, threshold: {self.match_threshold})')
             return None
 
     def score_all_results(self, sonarr_series: Dict[str, Any],
                           results: Dict[int, Dict],
-                          extra_titles: Optional[List[str]] = None) -> List[Tuple[float, int, Dict]]:
+                          extra_titles: Optional[List[str]] = None) -> List[Tuple[float, int, Dict, float]]:
         '''
         Score every search result against the Sonarr series and return them
-        sorted best-first: [(score, result_index, result_dict), ...].
+        sorted best-first: [(final_score, result_index, result_dict, raw_title_score), ...].
+
+        final_score includes year/country bonuses (for ranking); raw_title_score
+        is the unmodified title similarity and is what QUALIFIES a match.
 
         Used by match_series (single best) and by the daemon to detect
         season-split entries (a site listing "X" and "X Season 2" as
@@ -154,11 +159,15 @@ class SeriesMatcher:
             result_title = self._normalize_title(result.get('title', ''))
             result_year = str(result.get('year', 'XXXX'))
 
-            # Best similarity across all candidate sonarr titles
-            title_score = max(
+            # Best similarity across all candidate sonarr titles.
+            # This RAW title score is what qualifies a match — bonuses below
+            # only rank among qualifiers, they must not turn a different show
+            # (e.g. "Temporary Mom" vs "Mother and Mom", raw 0.59) into a match.
+            raw_title_score = max(
                 (self._similarity(t, result_title) for t in sonarr_titles),
                 default=0.0
             )
+            title_score = raw_title_score
 
             # Year bonus: if years match, boost the score
             year_match = sonarr_year == result_year and sonarr_year != ''
@@ -179,9 +188,10 @@ class SeriesMatcher:
 
             self.logger.debug(
                 f'  Result [{result.get("title")}] ({result_year}, country={result_country}): '
-                f'title_score={title_score:.2f}'
+                f'raw_title={raw_title_score:.2f} final={title_score:.2f}'
             )
-            scored.append((title_score, idx, result))
+            # (final_score, idx, result, raw_title_score)
+            scored.append((title_score, idx, result, raw_title_score))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return scored

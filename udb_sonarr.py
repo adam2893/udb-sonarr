@@ -303,25 +303,28 @@ class UDBSonarrDaemon:
                 # Score all results; collect every above-threshold match.
                 # The best becomes the primary; the rest are "variants"
                 # (season-split entries) if they belong to the same show.
+                # Qualification uses RAW title similarity (index 3) — year/
+                # country bonuses rank but must not turn a different show
+                # into a match (e.g. "Temporary Mom" -> "Mother and Mom").
                 scored = self.matcher.score_all_results(sonarr_series, search_results, extra_titles=extra_titles)
-                above = [(score, idx, res) for score, idx, res in scored if score >= self.matcher.match_threshold]
+                above = [(score, idx, res, raw) for score, idx, res, raw in scored if raw >= self.matcher.match_threshold]
                 if not above:
                     self.logger.debug(f'No match on {client_name} for query [{query}], trying next query')
                     continue
 
-                score, idx, primary = above[0]
-                self.logger.info(f'Found [{series_title}] on {client_name} -> [{primary.get("title")}] (score: {score:.2f})')
+                score, idx, primary, raw = above[0]
+                self.logger.info(f'Found [{series_title}] on {client_name} -> [{primary.get("title")}] (raw title: {raw:.2f})')
                 colprint('results',
                          f'  MATCHED [{series_title}] on {client_name} -> [{primary.get("title")}] '
-                         f'({primary.get("country", "?")}, {primary.get("year", "?")}, score {score:.2f})')
+                         f'({primary.get("country", "?")}, {primary.get("year", "?")}, raw title {raw:.2f})')
 
                 # Detect season-split variants ("X" + "X Season 2"). Variants
                 # are scored against the PRIMARY's title (not Sonarr + year),
                 # because a "Season 2" entry often has a different year and
                 # would otherwise fall below the strict match threshold.
                 variants = []
-                for v_score, v_idx, v_res in scored:
-                    if (v_score, v_idx) == (score, idx):
+                for v_score, v_idx, v_res, v_raw in scored:
+                    if (v_idx, v_res) == (idx, primary):
                         continue
                     v_sim = self.matcher._similarity(
                         self.matcher._normalize_title(primary.get('title', '')),
