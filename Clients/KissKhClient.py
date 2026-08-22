@@ -13,11 +13,14 @@ class KissKhClient(BaseClient):
     '''
     # step-0
     def __init__(self, config, session=None):
-        self.base_url = config.get('base_url', 'https://kisskh.nl/')
-        self.search_url = self.base_url + config.get('search_url', 'api/DramaList/Search?q=')
-        self.series_url = self.base_url + config.get('series_url', 'api/DramaList/Drama/')
-        self.episode_url = self.base_url + config.get('episode_url', 'api/DramaList/Episode/{id}.png?kkey=')
-        self.subtitles_url = self.base_url + config.get('subtitles_url', 'api/Sub/{id}?kkey=')
+        # Known working mirrors, checked in order. kisskh.nl was retired;
+        # current live domains verified 2026-08: .ovh, .id, .is
+        self.mirror_domains = config.get('kisskh_domains') or [
+            'kisskh.ovh', 'kisskh.id', 'kisskh.is', 'kisskh.nl'
+        ]
+        configured = config.get('base_url', 'https://kisskh.ovh/')
+        self.base_url = self._first_alive(configured)
+        self._build_urls(self.base_url)
         self.preferred_urls = config['preferred_urls'] if config.get('preferred_urls') else []
         self.blacklist_urls = config['blacklist_urls'] if config.get('blacklist_urls') else []
         self.selector_strategy = config.get('alternate_resolution_selector', 'lowest')
@@ -46,6 +49,40 @@ class KissKhClient(BaseClient):
         self.token_cache = {}
         self.use_kkey_cache = config.get('kkey_cache', True)
         self.kisskh_api_fallback_url = config.get('kisskh_api_fallback_url', '').rstrip('/')
+
+    def _build_urls(self, base_url):
+        '''Rebuild all endpoint URLs from the given base (e.g. after a domain switch).'''
+        base_url = base_url.rstrip('/') + '/'
+        self.base_url = base_url
+        self.search_url = base_url + 'api/DramaList/Search?q='
+        self.series_url = base_url + 'api/DramaList/Drama/'
+        self.episode_url = base_url + 'api/DramaList/Episode/{id}.png?kkey='
+        self.subtitles_url = base_url + 'api/Sub/{id}?kkey='
+
+    def _first_alive(self, configured):
+        '''
+        Pick the first reachable KissKh domain: the configured base first,
+        then each known mirror. Falls back to the configured value if all
+        checks fail (requests will just fail naturally afterwards).
+        '''
+        import requests as _requests
+        candidates = [configured.rstrip('/') + '/']
+        from urllib.parse import urlparse
+        configured_host = urlparse(configured).netloc.lower()
+        for domain in self.mirror_domains:
+            if domain.lower() != configured_host:
+                candidates.append(f'https://{domain}/')
+
+        for base in candidates:
+            try:
+                r = _requests.get(base, timeout=8,
+                                  headers={'User-Agent': 'Mozilla/5.0'})
+                if r.status_code < 500:
+                    return base
+            except Exception:
+                continue
+        self.logger.warning(f'No reachable KissKh domain found among {candidates}')
+        return candidates[0]
 
     # step-1.1
     def _show_search_results(self, key, details):

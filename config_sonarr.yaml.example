@@ -72,8 +72,13 @@ SonarrConfig:
 # KissKh Client Configuration
 # ─────────────────────────────────────────────────────────────
 Anime, Drama, Movies & TV Shows (Kisskh):
-  # KissKh base URL (domain rotates - update if kisskh.nl stops working)
-  base_url: https://kisskh.nl/
+  # KissKh base URL. Domains rotate — if the configured one is unreachable
+  # the client automatically tries each known mirror (kisskh_domains) and
+  # picks the first that responds.
+  base_url: https://kisskh.ovh/
+  # Known mirrors, tried in order if base_url is down
+  # (kisskh.nl is retired)
+  kisskh_domains: ['kisskh.ovh', 'kisskh.id', 'kisskh.is']
   search_url: api/DramaList/Search?q=
   series_url: api/DramaList/Drama/
   episode_url: api/DramaList/Episode/{id}.png?kkey=
