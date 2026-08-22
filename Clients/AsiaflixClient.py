@@ -187,26 +187,31 @@ class AsiaflixClient(BaseClient):
         return all_episodes_list
 
     # step-3.1
-    def _pick_stream_url(self, episode):
+    def _pick_stream_urls(self, episode):
         '''
-        pick the best embed url for the episode based on source priority
+        Return all embed URLs for the episode, ordered by source priority.
+        Returns a list (possibly empty). The caller tries each in order
+        until one downloads successfully — some hosts (e.g. streamtape
+        mirror domains) may 404 from certain IPs.
         '''
         stream_urls = episode.get('streamUrls', [])
         if len(stream_urls) == 0:
-            return None
+            return []
 
-        # iterate the priority order and pick the first matching source
+        ordered = []
+        # first pass: sources in priority order
         for source in self.source_priority:
             for stream in stream_urls:
                 if stream.get('source') == source and stream.get('url'):
-                    return stream['url']
-
-        # fallback: use the first available source
+                    if stream['url'] not in ordered:
+                        ordered.append(stream['url'])
+        # second pass: any remaining sources (dedup)
         for stream in stream_urls:
-            if stream.get('url'):
-                return stream['url']
+            url = stream.get('url')
+            if url and url not in ordered:
+                ordered.append(url)
 
-        return None
+        return ordered
 
     # step-3
     def fetch_episode_links(self, episodes, ep_ranges):
@@ -226,16 +231,20 @@ class AsiaflixClient(BaseClient):
                 continue
             self.logger.debug(f'Processing {episode = }')
 
-            url = self._pick_stream_url(episode)
-            if url is None:
+            urls = self._pick_stream_urls(episode)
+            if not urls:
                 self.logger.warning(f'No stream url found for episode: {ep_no}')
                 continue
+            url = urls[0]
 
             # single '1080' numeric key. the yt-dlp backend resolves
-            # the actual quality itself, so keep it resolution-agnostic
+            # the actual quality itself, so keep it resolution-agnostic.
+            # Alternate source URLs (streamtape mirrors etc.) are included
+            # so the downloader can fall back if the first host 404s.
             download_links[ep_no] = {
                 '1080': {
                     'downloadLink': url,
+                    'alternateLinks': urls[1:],
                     'downloadType': 'embed',
                     'resolution_size': 'embed',
                     'duration': 'NA'

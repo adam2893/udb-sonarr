@@ -514,12 +514,23 @@ class UDBSonarrDaemon:
                 dl_config['referer'] = getattr(client, 'base_url', '')
                 dl_config['_aes_decrypt'] = getattr(client, '_aes_decrypt', None)
                 dl_client = YtDlpDownloader(dl_config, ep_details)
-                self.logger.info(f'Starting download: {filename} ({selected_res}p, {download_type}, yt-dlp)')
-                status, msg = dl_client.start_download(download_link)
+
+                # Try the primary source, then any alternate sources
+                # (e.g. streamtape mirror domains that may 404 from some IPs)
+                links_to_try = [download_link] + list(res_data.get('alternateLinks', []))
+                status, msg = 1, 'no sources'
+                for i, link in enumerate(links_to_try):
+                    if i > 0:
+                        self.logger.info(f'Trying alternate source {i + 1}/{len(links_to_try)} for {filename}')
+                    status, msg = dl_client.start_download(link)
+                    if status == 0:
+                        break
+                    self.logger.warning(f'Source {i + 1} failed for {filename}: {msg}')
+
                 if status == 0:
                     dl_client.download_subtitles()
                 if status != 0:
-                    self.logger.error(f'Download failed: {msg}')
+                    self.logger.error(f'Download failed for {filename}: {msg}')
                     return False
                 self.logger.info(f'Download completed: {filename}')
                 return True
