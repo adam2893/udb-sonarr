@@ -67,6 +67,27 @@ class SeriesMatcher:
         Returns:
             Tuple of (kisskh_index, kisskh_result_dict) or None if no match found.
         '''
+        scored = self.score_all_results(sonarr_series, kisskh_results, extra_titles)
+        if scored and scored[0][0] >= self.match_threshold:
+            score, idx, result = scored[0]
+            self.logger.info(f'Series matched: Sonarr [{sonarr_series.get("title")}] -> [{result.get("title")}] (score: {score:.2f})')
+            return (idx, result)
+        else:
+            best = scored[0][0] if scored else 0.0
+            self.logger.warning(f'No match found for [{sonarr_series.get("title")}] (best score: {best:.2f}, threshold: {self.match_threshold})')
+            return None
+
+    def score_all_results(self, sonarr_series: Dict[str, Any],
+                          results: Dict[int, Dict],
+                          extra_titles: Optional[List[str]] = None) -> List[Tuple[float, int, Dict]]:
+        '''
+        Score every search result against the Sonarr series and return them
+        sorted best-first: [(score, result_index, result_dict), ...].
+
+        Used by match_series (single best) and by the daemon to detect
+        season-split entries (a site listing "X" and "X Season 2" as
+        separate series, e.g. Asiaflix).
+        '''
         # Build the set of candidate sonarr titles: primary + TMDB aliases
         sonarr_titles = [self._normalize_title(sonarr_series.get('title', ''))]
         for alt in (extra_titles or []):
@@ -76,46 +97,38 @@ class SeriesMatcher:
         sonarr_year = str(sonarr_series.get('year', ''))
 
         self.logger.debug(
-            f'Matching Sonarr series [{sonarr_titles}] ({sonarr_year}) against '
-            f'{len(kisskh_results)} results'
+            f'Scoring Sonarr series [{sonarr_titles}] ({sonarr_year}) against '
+            f'{len(results)} results'
         )
 
-        best_match = None
-        best_score = 0.0
-
-        for idx, result in kisskh_results.items():
-            kisskh_title = self._normalize_title(result.get('title', ''))
-            kisskh_year = str(result.get('year', 'XXXX'))
+        scored = []
+        for idx, result in results.items():
+            result_title = self._normalize_title(result.get('title', ''))
+            result_year = str(result.get('year', 'XXXX'))
 
             # Best similarity across all candidate sonarr titles
             title_score = max(
-                (self._similarity(t, kisskh_title) for t in sonarr_titles),
+                (self._similarity(t, result_title) for t in sonarr_titles),
                 default=0.0
             )
 
             # Year bonus: if years match, boost the score
-            year_match = sonarr_year == kisskh_year and sonarr_year != ''
+            year_match = sonarr_year == result_year and sonarr_year != ''
             if self.verify_year and year_match:
                 title_score += 0.15  # year match bonus
-            elif self.verify_year and sonarr_year != '' and kisskh_year != 'XXXX' and not year_match:
+            elif self.verify_year and sonarr_year != '' and result_year != 'XXXX' and not year_match:
                 title_score -= 0.2  # year mismatch penalty
 
-            self.logger.debug(f'  Result [{result.get("title")}] ({kisskh_year}): title_score={title_score:.2f}')
+            self.logger.debug(f'  Result [{result.get("title")}] ({result_year}): title_score={title_score:.2f}')
+            scored.append((title_score, idx, result))
 
-            if title_score > best_score:
-                best_score = title_score
-                best_match = (idx, result)
-
-        if best_match and best_score >= self.match_threshold:
-            self.logger.info(f'Series matched: Sonarr [{sonarr_series.get("title")}] -> [{best_match[1].get("title")}] (score: {best_score:.2f})')
-            return best_match
-        else:
-            self.logger.warning(f'No match found for [{sonarr_series.get("title")}] (best score: {best_score:.2f}, threshold: {self.match_threshold})')
-            return None
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return scored
 
     def map_episode(self, sonarr_episode: Dict[str, Any],
                     kisskh_episodes: List[Dict[str, Any]],
-                    sonarr_series_id: Optional[int] = None) -> Optional[Dict[str, Any]]:
+                    sonarr_series_id: Optional[int] = None,
+                    variant_episodes: Optional[List[Tuple[Dict, List[Dict]]]] = None) -> Optional[Dict[str, Any]]:
         '''
         Map a Sonarr episode (seasonNumber, episodeNumber) to a KissKh episode.
 
@@ -123,10 +136,17 @@ class SeriesMatcher:
         For multi-season shows: uses season_mappings config or a heuristic
         that counts episodes across seasons.
 
+        variant_episodes: list of (entry_dict, episode_list) for season-split
+        entries (e.g. Asiaflix listing "X" and "X Season 2" separately). Only
+        consulted when the flat mapping fails. Each variant's title is checked
+        for a season marker ("Season 2", "Part 2", "S2", etc.); if it matches
+        the Sonarr season, that entry's episodes are used.
+
         Args:
             sonarr_episode: dict with seasonNumber, episodeNumber
             kisskh_episodes: list from KissKhClient.fetch_episodes_list()
             sonarr_series_id: optional, for looking up per-series season mappings
+            variant_episodes: optional list of (entry, episodes) for season splits
 
         Returns:
             Matching KissKh episode dict or None.
@@ -153,28 +173,74 @@ class SeriesMatcher:
             for ep in kisskh_episodes:
                 if float(ep.get('episode', 0)) == float(ep_num):
                     return ep
+            # Season 1 with no direct match: try season-split variant entries
+            # (e.g. site lists "X" separately from "X Season 1")
+            matched = self._map_from_variants(season, ep_num, variant_episodes)
+            if matched:
+                return matched
             self.logger.warning(f'Episode {ep_num} not found in KissKh episode list (single-season direct map)')
             return None
 
         # Multi-season heuristic: try to find the episode by absolute number
-        # This assumes KissKh lists episodes sequentially across seasons
-        # Calculate absolute episode number by summing previous seasons' episode counts
-        # This is a best-effort heuristic that may need per-series overrides
         absolute_ep = ep_num
-        # Without knowing previous season counts, we try the direct number first
-        # then try offsetting by common season lengths
         for ep in kisskh_episodes:
             if float(ep.get('episode', 0)) == float(ep_num):
                 self.logger.debug(f'Multi-season: direct match S{season}E{ep_num} -> KissKh ep {ep_num}')
                 return ep
 
-        # Try treating KissKh episode number as absolute (season * typical_eps + ep)
-        # This is fragile but better than nothing for shows without explicit mappings
+        # Fall back to season-split variant entries (Asiaflix-style splits)
+        matched = self._map_from_variants(season, ep_num, variant_episodes)
+        if matched:
+            return matched
+
         self.logger.warning(
             f'Could not map S{season}E{ep_num} to KissKh episode. '
             f'Consider adding a season_mapping override for series ID {sonarr_series_id}.'
         )
         return None
+
+    def _map_from_variants(self, season: int, ep_num: int,
+                           variant_episodes: Optional[List[Tuple[Dict, List[Dict]]]]) -> Optional[Dict]:
+        '''
+        Try to map a Sonarr episode to a season-split variant entry.
+        A variant matches if its title carries a season marker equal to the
+        Sonarr season (e.g. "Season 2", "Part 2", "S2", " 2"). The episode
+        number is then used directly against that entry's episode list
+        (season-relative numbering: "X Season 2" lists its own eps 1..N).
+        '''
+        if not variant_episodes:
+            return None
+
+        for entry, episodes in variant_episodes:
+            entry_title = entry.get('title', '')
+            if not self._title_matches_season(entry_title, season):
+                continue
+            for ep in episodes:
+                if float(ep.get('episode', 0)) == float(ep_num):
+                    self.logger.info(
+                        f'Mapped S{season}E{ep_num} -> variant [{entry_title}] ep {ep_num}'
+                    )
+                    return ep
+        return None
+
+    @staticmethod
+    def _title_matches_season(title: str, season: int) -> bool:
+        '''Check whether a title carries a marker for the given season,
+        e.g. "X Season 2", "X Part 2", "X S2", "X 2nd", "X: The Second".'''
+        lowered = title.lower()
+        markers = [
+            f'season {season}', f'season-{season}', f's{season}',
+            f'part {season}', f'part-{season}', f'part {season}',
+            f'series {season}',
+        ]
+        for marker in markers:
+            if marker in lowered:
+                return True
+        # Word-ending number, e.g. "BLANK 2" or "BLANK: The Second Season"
+        import re
+        if re.search(rf'(^|\s){season}(\s|$|:)', lowered):
+            return True
+        return False
 
     def build_episode_ranges(self, missing_episodes: List[Dict[str, Any]]) -> Dict[str, Dict]:
         '''

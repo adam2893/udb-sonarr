@@ -253,8 +253,12 @@ class UDBSonarrDaemon:
     def find_series_on_clients(self, series_title: str, sonarr_series: Dict):
         '''
         Try each configured site client to find the series.
-        Returns: (client_name, client_instance, matched_series_dict) or None.
-        Tries clients in order; returns first successful match.
+        Returns: (client_name, client_instance, matched_series_dict, variant_series_list) or None.
+        variant_series_list holds additional above-threshold matches for the
+        same series — used when a site splits seasons into separate entries
+        (e.g. Asiaflix lists "X" and "X Season 2" separately). Empty for
+        sites that keep one series (KissKh). Tries clients in order; returns
+        first client with a match.
         '''
         for client_name in self.site_client_names:
             client = self.site_clients.get(client_name)
@@ -295,14 +299,39 @@ class UDBSonarrDaemon:
                     except Exception as e:
                         self.logger.debug(f'TMDB lookup failed for [{series_title}]: {e}')
 
-                # Try to match
-                match = self.matcher.match_series(sonarr_series, search_results, extra_titles=extra_titles)
-                if match:
-                    _, matched_series = match
-                    self.logger.info(f'Found [{series_title}] on {client_name} -> [{matched_series.get("title")}]')
-                    return (client_name, client, matched_series)
+                # Score all results; collect every above-threshold match.
+                # The best becomes the primary; the rest are "variants"
+                # (season-split entries) if they belong to the same show.
+                scored = self.matcher.score_all_results(sonarr_series, search_results, extra_titles=extra_titles)
+                above = [(score, idx, res) for score, idx, res in scored if score >= self.matcher.match_threshold]
+                if not above:
+                    self.logger.debug(f'No match on {client_name} for query [{query}], trying next query')
+                    continue
 
-                self.logger.debug(f'No match on {client_name} for query [{query}], trying next query')
+                score, idx, primary = above[0]
+                self.logger.info(f'Found [{series_title}] on {client_name} -> [{primary.get("title")}] (score: {score:.2f})')
+
+                # Detect season-split variants ("X" + "X Season 2"). Variants
+                # are scored against the PRIMARY's title (not Sonarr + year),
+                # because a "Season 2" entry often has a different year and
+                # would otherwise fall below the strict match threshold.
+                variants = []
+                for v_score, v_idx, v_res in scored:
+                    if (v_score, v_idx) == (score, idx):
+                        continue
+                    v_sim = self.matcher._similarity(
+                        self.matcher._normalize_title(primary.get('title', '')),
+                        self.matcher._normalize_title(v_res.get('title', ''))
+                    )
+                    if v_sim >= self.matcher.match_threshold:
+                        variants.append(v_res)
+
+                if variants:
+                    self.logger.info(
+                        f'  {len(variants)} additional match(es) on {client_name}: '
+                        f'{[v.get("title") for v in variants]} (treating as season variants)'
+                    )
+                return (client_name, client, primary, variants)
 
         return None
 
@@ -361,7 +390,7 @@ class UDBSonarrDaemon:
                 total_skipped += len(missing_eps)
                 continue
 
-            client_name, client, matched_series = found
+            client_name, client, matched_series, variant_series = found
 
             # Fetch episode list from site
             try:
@@ -375,6 +404,20 @@ class UDBSonarrDaemon:
                 self.logger.warning(f'No episodes found on {client_name} for [{matched_series.get("title")}]')
                 total_skipped += len(missing_eps)
                 continue
+
+            # Fetch episode lists for season-variant entries too (Asiaflix
+            # splits "X" and "X Season 2" into separate series). Only used
+            # when flat mapping fails; sites with one series pass [] here.
+            variant_episodes = []
+            for v_series in variant_series:
+                try:
+                    v_eps = client.fetch_episodes_list(v_series)
+                    if v_eps:
+                        variant_episodes.append((v_series, v_eps))
+                except Exception as e:
+                    self.logger.debug(f'Failed to fetch variant episodes for [{v_series.get("title")}]: {e}')
+            if variant_episodes:
+                self.logger.info(f'Loaded {len(variant_episodes)} season-variant episode list(s) for [{series_title}]')
 
             # Step 5: Download each missing episode
             series_path = self.sonarr.get_series_path(series)
@@ -400,8 +443,11 @@ class UDBSonarrDaemon:
                     self.logger.debug(f'Already downloaded {ep_key}, skipping')
                     continue
 
-                # Map Sonarr episode to site episode
-                site_ep = self.matcher.map_episode(ep, site_episodes, series_id)
+                # Map Sonarr episode to site episode.
+                # variant_episodes are consulted when the flat map fails
+                # (Asiaflix-style season splits).
+                site_ep = self.matcher.map_episode(ep, site_episodes, series_id,
+                                                   variant_episodes=variant_episodes)
                 if not site_ep:
                     self.logger.warning(f'  Could not map S{season:02d}E{ep_num:02d} to {client_name} episode')
                     total_skipped += 1
