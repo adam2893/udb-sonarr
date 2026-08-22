@@ -9,7 +9,7 @@ Requires a running Sonarr instance. Put your config_sonarr.yaml inside the confi
 WARNING: downloads are placed directly into Sonarr's media folders — the /tv mount MUST be the same path Sonarr uses, or imports will fail.</Overview>
   <Category>MediaApp:Video:</Category>
   <TemplateURL>https://raw.githubusercontent.com/adam2893/udb-sonarr/main/unraid/udb-sonarr.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/adam2893/udb-sonarr/main/images/icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/adam2893/udb-sonarr/main/images/udb-usage-preview.png</Icon>
   <Repository>ghcr.io/adam2893/udb-sonarr:latest</Repository>
   <Privileged>false</Privileged>
   <Support>https://github.com/adam2893/udb-sonarr/issues</Support>
