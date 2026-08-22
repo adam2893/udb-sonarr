@@ -2,7 +2,7 @@ __author__ = 'UDB-Sonarr Fork'
 
 import logging
 import requests
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 
 
 class SonarrClient:
@@ -198,6 +198,29 @@ class SonarrClient:
         except Exception as e:
             self.logger.error(f'Failed to verify files detected for series {series_id}: {e}')
         return detected
+
+    def get_imported_episode_paths(self, series_id: int,
+                                   expected_seasons: Dict[int, List[int]]) -> Dict[Tuple[int, int], str]:
+        '''
+        After a rescan/import, return the FINAL Sonarr path for each episode
+        that now has a file. Sonarr renames/moves files during import, so
+        this shows where they actually landed.
+        expected_seasons: { season: [episode_numbers...] }
+        Returns { (season, episode): path } for episodes with files.
+        '''
+        imported = {}
+        try:
+            episodes = self._request('GET', 'episode', params={'seriesId': series_id})
+            for ep in episodes:
+                season = ep.get('seasonNumber')
+                ep_num = ep.get('episodeNumber')
+                if season in expected_seasons and ep_num in expected_seasons[season] and ep.get('hasFile'):
+                    ep_file = ep.get('episodeFile') or {}
+                    path = ep_file.get('path') or ep_file.get('relativePath') or ''
+                    imported[(season, ep_num)] = path
+        except Exception as e:
+            self.logger.error(f'Failed to fetch imported episode paths for series {series_id}: {e}')
+        return imported
 
     def trigger_refresh_series(self, series_id: int) -> Optional[Dict]:
         '''

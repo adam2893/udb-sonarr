@@ -509,6 +509,16 @@ class UDBSonarrDaemon:
                             f'scanning that path. Check container path mappings.'
                         )
 
+                    # Report the FINAL Sonarr path for each imported episode
+                    # (Sonarr renames/moves files during import).
+                    imported = self.sonarr.get_imported_episode_paths(series_id, expected)
+                    for (season, ep_num), path in sorted(imported.items()):
+                        self.logger.info(
+                            f'IMPORTED [{series_title}] S{season:02d}E{ep_num:02d} -> {path}'
+                        )
+                        colprint('success',
+                                 f'    Imported: S{season:02d}E{ep_num:02d} -> {path}')
+
         # Cycle summary
         cycle_time = time.time() - cycle_start
         summary = (
