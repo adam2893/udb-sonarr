@@ -152,6 +152,9 @@ SonarrConfig:
   site_client: all                 # all | kisskh | animepahe | asiaflix | [list]
   poll_interval_minutes: 30
   tags: []                         # only process series with these Sonarr tags (e.g. ["asiandrama"]); [] = all
+  match_threshold: 0.6             # minimum title similarity (0.0-1.0)
+  verify_year: true                # boost score if release years match
+  verify_country: true             # penalize wrong-country matches (uses Sonarr countryCode)
   season_mappings: {}              # multi-season episode offset overrides
 ```
 

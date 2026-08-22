@@ -188,6 +188,7 @@ class UDBSonarrDaemon:
             'season_mappings': sonarr_config.get('season_mappings', {}),
             'match_threshold': sonarr_config.get('match_threshold', 0.6),
             'verify_year': sonarr_config.get('verify_year', True),
+            'verify_country': sonarr_config.get('verify_country', True),
         }
         self.matcher = SeriesMatcher(matcher_config)
 

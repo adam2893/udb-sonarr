@@ -57,6 +57,7 @@ SonarrConfig:
   # Series matching settings
   match_threshold: 0.6        # Minimum title similarity (0.0-1.0)
   verify_year: true           # Boost score if release years match
+  verify_country: true        # Penalize wrong-country matches (Sonarr countryCode vs site country)
   
   # Season mapping overrides for multi-season shows
   # Only needed when KissKh uses flat numbering across seasons

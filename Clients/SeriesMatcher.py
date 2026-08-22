@@ -16,6 +16,15 @@ class SeriesMatcher:
     For multi-season shows, a mapping config or heuristic is needed.
     '''
 
+    # ISO-3166 alpha-2 -> common English country name (lowercase)
+    COUNTRY_ISO_TO_NAME = {
+        'TH': 'thailand', 'KR': 'south korea', 'CN': 'china', 'JP': 'japan',
+        'PH': 'philippines', 'TW': 'taiwan', 'HK': 'hong kong', 'VN': 'vietnam',
+        'ID': 'indonesia', 'MY': 'malaysia', 'SG': 'singapore', 'IN': 'india',
+        'US': 'united states', 'GB': 'united kingdom', 'UK': 'united kingdom',
+        'AU': 'australia', 'CA': 'canada', 'DE': 'germany', 'FR': 'france',
+    }
+
     def __init__(self, config: Optional[Dict] = None):
         self.logger = logging.getLogger()
         # Per-series override mapping: { sonarr_series_id: { season: kisskh_ep_offset } }
@@ -25,6 +34,44 @@ class SeriesMatcher:
         self.match_threshold = config.get('match_threshold', 0.6) if config else 0.6
         # Whether to verify year when matching
         self.verify_year = config.get('verify_year', True) if config else True
+        # Whether to verify country when matching (Sonarr countryCode vs site country)
+        self.verify_country = config.get('verify_country', True) if config else True
+
+    @staticmethod
+    def _normalize_country(country: str) -> str:
+        '''
+        Normalize a country value to a canonical lowercase name.
+        Handles both ISO-3166 codes (from Sonarr countryCode) and
+        English names (from site search results).
+        '''
+        if not country:
+            return ''
+        c = str(country).strip().lower()
+        # ISO code -> name
+        upper = c.upper()
+        if upper in SeriesMatcher.COUNTRY_ISO_TO_NAME:
+            return SeriesMatcher.COUNTRY_ISO_TO_NAME[upper]
+        # Common aliases
+        aliases = {
+            'usa': 'united states', 'us': 'united states', 'america': 'united states',
+            'korea': 'south korea', 'southkorea': 'south korea',
+            'uk': 'united kingdom', 'england': 'united kingdom', 'britain': 'united kingdom',
+            'prc': 'china', 'mainland china': 'china',
+        }
+        compact = c.replace(' ', '')
+        if compact in aliases:
+            return aliases[compact]
+        if c in aliases:
+            return aliases[c]
+        return c
+
+    @classmethod
+    def _countries_match(cls, a: str, b: str) -> bool:
+        '''True if two normalized country values refer to the same country.'''
+        na, nb = cls._normalize_country(a), cls._normalize_country(b)
+        if not na or not nb:
+            return False
+        return na == nb
 
     @staticmethod
     def _normalize_title(title: str) -> str:
@@ -95,9 +142,10 @@ class SeriesMatcher:
             if alt_norm and alt_norm not in sonarr_titles:
                 sonarr_titles.append(alt_norm)
         sonarr_year = str(sonarr_series.get('year', ''))
+        sonarr_country = sonarr_series.get('countryCode') or sonarr_series.get('country') or ''
 
         self.logger.debug(
-            f'Scoring Sonarr series [{sonarr_titles}] ({sonarr_year}) against '
+            f'Scoring Sonarr series [{sonarr_titles}] ({sonarr_year}, country={sonarr_country}) against '
             f'{len(results)} results'
         )
 
@@ -119,7 +167,20 @@ class SeriesMatcher:
             elif self.verify_year and sonarr_year != '' and result_year != 'XXXX' and not year_match:
                 title_score -= 0.2  # year mismatch penalty
 
-            self.logger.debug(f'  Result [{result.get("title")}] ({result_year}): title_score={title_score:.2f}')
+            # Country check: a conflicting country (e.g. Philippines vs
+            # Thailand) means it is almost certainly a different show,
+            # even if the title is similar.
+            result_country = result.get('country') or ''
+            if self.verify_country and sonarr_country and result_country:
+                if self._countries_match(sonarr_country, result_country):
+                    title_score += 0.15  # country match bonus
+                else:
+                    title_score -= 0.4  # strong penalty for wrong country
+
+            self.logger.debug(
+                f'  Result [{result.get("title")}] ({result_year}, country={result_country}): '
+                f'title_score={title_score:.2f}'
+            )
             scored.append((title_score, idx, result))
 
         scored.sort(key=lambda x: x[0], reverse=True)
