@@ -7,3 +7,4 @@ pycryptodomex
 undetected-chromedriver
 setuptools
 quickjs-ng
+yt-dlp

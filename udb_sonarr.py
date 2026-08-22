@@ -1,0 +1,606 @@
+#!/usr/bin/env python3
+__author__ = 'UDB-Sonarr Fork'
+
+'''
+UDB-Sonarr: Daemon that polls Sonarr for missing episodes and downloads
+them via UDB's site clients (KissKh, etc.) automatically.
+
+This replaces UDB's interactive CLI with a Sonarr-driven polling loop.
+The download infrastructure (BaseClient, HLSDownloader, etc.) is reused as-is.
+
+Usage:
+    python udb_sonarr.py                          # Run with default config
+    python udb_sonarr.py -c config_sonarr.yaml    # Run with custom config
+    python udb_sonarr.py --once                   # Run a single check cycle then exit
+    python udb_sonarr.py --dry-run                # Check but don't download
+    python udb_sonarr.py -D                       # Debug logging
+'''
+
+import argparse
+import os
+import sys
+import time
+import traceback
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+
+# UDB internals
+from Utils.commons import (
+    colprint_init, colprint, PRINT_THEMES, ExitException,
+    create_logger, load_yaml, pretty_time, strip_ansi,
+    threaded, delete_old_logs, get_ffmpeg_version, DownloadController
+)
+
+# Sonarr integration
+from Clients.SonarrClient import SonarrClient
+from Clients.SeriesMatcher import SeriesMatcher
+
+# UDB site clients (imported lazily in init_site_client to avoid requiring
+# all dependencies just for --help / --version)
+
+__version__ = '0.1.0'
+get_current_time = lambda fmt='%F %T': datetime.now().strftime(fmt)
+VALID_FFMPEG_VERSION = (7, 1, 1)
+
+
+class UDBSonarrDaemon:
+    '''
+    Main daemon controller. Polls Sonarr for missing episodes,
+    downloads them via site clients, and triggers Sonarr rescans.
+    '''
+
+    def __init__(self, config: Dict[str, Any], args):
+        self.config = config
+        self.args = args
+        self.logger = None
+        self.sonarr = None
+        self.matcher = None
+        self.site_clients: Dict[str, Any] = {}
+        self.disable_colors = args.disable_colors
+        self.dry_run = args.dry_run
+        self.once = args.once
+
+        # Sonarr config
+        sonarr_config = config.get('SonarrConfig', {})
+        self.poll_interval = sonarr_config.get('poll_interval_minutes', 30) * 60
+
+        # Downloader config (reused from UDB)
+        self.downloader_config = config.get('DownloaderConfig', {})
+        self.downloader_config.setdefault('max_parallel_downloads', 2)
+        self.downloader_config.setdefault('download_dir', '/tmp/udb-sonarr')
+        self.downloader_config.setdefault('temp_download_dir', 'auto')
+        self.downloader_config.setdefault('concurrency_per_file', 'auto')
+        self.downloader_config.setdefault('request_timeout', 30)
+
+        # Quality preference
+        self.quality = sonarr_config.get('quality', '1080')
+
+        # Downloader backend: 'udb' (UDB's HLSDownloader/BaseDownloader) or
+        # 'yt-dlp' (kisskh-dl-style yt-dlp wrapper — more robust, needs yt-dlp installed)
+        self.downloader_type = sonarr_config.get('downloader_type', 'udb').lower()
+        if self.downloader_type not in ('udb', 'yt-dlp'):
+            colprint('error', f'Unknown downloader_type: {self.downloader_type}. Valid: udb, yt-dlp')
+            raise ExitException(1)
+
+        # Which site clients to use — can be a single name or a list.
+        # The daemon tries each in order until one has the series.
+        # Options: kisskh, animepahe, asiaflix
+        # Default: all active clients
+        site_client_config = sonarr_config.get('site_client', 'all')
+        if isinstance(site_client_config, str):
+            if site_client_config.lower() == 'all':
+                self.site_client_names = ['kisskh', 'animepahe', 'asiaflix']
+            else:
+                self.site_client_names = [site_client_config.lower()]
+        elif isinstance(site_client_config, list):
+            self.site_client_names = [s.lower() for s in site_client_config]
+        else:
+            self.site_client_names = ['kisskh']
+
+        # Track downloads to avoid re-downloading in same session
+        self.completed_downloads: Dict[str, bool] = {}
+
+    def init_logging(self):
+        '''Initialize logging using UDB's logger system.'''
+        log_config = self.config.get('LoggerConfig', {})
+        log_config['log_file_name'] = self.args.log_file or f'udb_sonarr_{get_current_time("%Y%m%d%H%M%S")}.log'
+        if self.args.debug:
+            log_config['log_level'] = 'DEBUG'
+        self.logger = create_logger(**log_config)
+        self.logger.info(f'--- UDB-Sonarr v{__version__} started ---')
+        self.logger.info(f'CLI args: {self.args}')
+
+        # Clean old logs
+        delete_old_logs(
+            log_config.get('log_dir', 'logs'),
+            log_config.get('log_retention_days', 7),
+            log_config.get('log_backup_count', 3)
+        )
+
+    def check_ffmpeg(self):
+        '''Verify ffmpeg is installed and version is sufficient.'''
+        ffmpeg_version = get_ffmpeg_version()
+        if not ffmpeg_version:
+            colprint('error', 'ffmpeg not found in PATH. Install ffmpeg to proceed.')
+            raise ExitException(1)
+        elif ffmpeg_version < VALID_FFMPEG_VERSION:
+            self.logger.warning(
+                f'ffmpeg version {".".join(map(str, ffmpeg_version))} is below recommended '
+                f'{".".join(map(str, VALID_FFMPEG_VERSION))}. Some features may not work.'
+            )
+        else:
+            self.logger.debug(f'ffmpeg version: {".".join(map(str, ffmpeg_version))}')
+
+    def init_sonarr(self):
+        '''Initialize Sonarr API client and test connection.'''
+        sonarr_config = self.config.get('SonarrConfig', {})
+        if not sonarr_config.get('url') or not sonarr_config.get('api_key'):
+            colprint('error', 'SonarrConfig.url and SonarrConfig.api_key are required in config')
+            raise ExitException(1)
+
+        self.sonarr = SonarrClient(sonarr_config)
+        if not self.sonarr.test_connection():
+            colprint('error', 'Cannot connect to Sonarr. Check URL and API key in config.')
+            raise ExitException(1)
+
+    def init_matcher(self):
+        '''Initialize series/episode matcher.'''
+        sonarr_config = self.config.get('SonarrConfig', {})
+        matcher_config = {
+            'season_mappings': sonarr_config.get('season_mappings', {}),
+            'match_threshold': sonarr_config.get('match_threshold', 0.6),
+            'verify_year': sonarr_config.get('verify_year', True),
+        }
+        self.matcher = SeriesMatcher(matcher_config)
+
+    # Map client names to their UDB config keys and import paths
+    CLIENT_REGISTRY = {
+        'kisskh': {
+            'config_key': 'Anime, Drama, Movies & TV Shows (Kisskh)',
+            'import_path': 'Clients.KissKhClient',
+            'class_name': 'KissKhClient'
+        },
+        'animepahe': {
+            'config_key': 'Anime (Animepahe)',
+            'import_path': 'Clients.AnimePaheClient',
+            'class_name': 'AnimePaheClient'
+        },
+        'asiaflix': {
+            'config_key': 'Asian Dramas & Movies (Asiaflix)',
+            'import_path': 'Clients.AsiaflixClient',
+            'class_name': 'AsiaflixClient'
+        }
+    }
+
+    def init_site_client(self):
+        '''Initialize all configured site clients for downloading.'''
+        for client_name in self.site_client_names:
+            if client_name not in self.CLIENT_REGISTRY:
+                colprint('error', f'Unknown site client: {client_name}')
+                continue
+
+            registry = self.CLIENT_REGISTRY[client_name]
+            client_config = dict(self.config.get(registry['config_key'], {}))
+
+            # Merge with downloader config for download dir
+            if 'download_dir' not in client_config:
+                client_config['download_dir'] = self.downloader_config['download_dir']
+            client_config['request_timeout'] = self.downloader_config.get('request_timeout', 30)
+
+            try:
+                # Lazy import
+                import importlib
+                module = importlib.import_module(registry['import_path'])
+                client_class = getattr(module, registry['class_name'])
+                self.site_clients[client_name] = client_class(client_config)
+                self.logger.info(f'{client_name} client initialized')
+            except Exception as e:
+                self.logger.error(f'Failed to initialize {client_name} client: {e}')
+                colprint('error', f'Failed to initialize {client_name}: {e}')
+
+        if not self.site_clients:
+            colprint('error', 'No site clients could be initialized. Check config and dependencies.')
+            raise ExitException(1)
+
+    def find_series_on_clients(self, series_title: str, sonarr_series: Dict):
+        '''
+        Try each configured site client to find the series.
+        Returns: (client_name, client_instance, matched_series_dict) or None.
+        Tries clients in order; returns first successful match.
+        '''
+        for client_name in self.site_client_names:
+            client = self.site_clients.get(client_name)
+            if not client:
+                continue
+
+            self.logger.debug(f'Searching for [{series_title}] on {client_name}')
+            try:
+                search_results = client.search(series_title)
+            except Exception as e:
+                self.logger.warning(f'{client_name} search failed for [{series_title}]: {e}')
+                continue
+
+            if not search_results:
+                self.logger.debug(f'No results on {client_name} for [{series_title}]')
+                continue
+
+            # Try to match
+            match = self.matcher.match_series(sonarr_series, search_results)
+            if match:
+                _, matched_series = match
+                self.logger.info(f'Found [{series_title}] on {client_name} -> [{matched_series.get("title")}]')
+                return (client_name, client, matched_series)
+
+        return None
+
+    def run_cycle(self):
+        '''
+        Run a single polling cycle:
+        1. Get monitored series from Sonarr
+        2. For each series, find missing episodes
+        3. Search site client for the series
+        4. Match and download missing episodes
+        5. Trigger Sonarr rescan
+        '''
+        cycle_start = time.time()
+        self.logger.info(f'--- Poll cycle started at {get_current_time()} ---')
+        colprint('header', f'\n[{"DRY-RUN" if self.dry_run else "ACTIVE"}] Poll cycle started at {get_current_time()}')
+
+        # Step 1: Get monitored series
+        series_list = self.sonarr.get_monitored_series()
+        if not series_list:
+            self.logger.info('No monitored series found in Sonarr')
+            return
+
+        total_downloaded = 0
+        total_skipped = 0
+        total_failed = 0
+
+        for series in series_list:
+            series_id = series['id']
+            series_title = series['title']
+            self.logger.info(f'Processing series: [{series_title}] (id: {series_id})')
+
+            # Step 2: Get missing episodes
+            missing_eps = self.sonarr.get_missing_episodes(series_id)
+            if not missing_eps:
+                self.logger.debug(f'No missing episodes for [{series_title}]')
+                continue
+
+            colprint('results', f'  [{series_title}]: {len(missing_eps)} missing episode(s)')
+
+            if self.dry_run:
+                for ep in missing_eps:
+                    colprint('predefined', f'    DRY-RUN: Would download S{ep["seasonNumber"]:02d}E{ep["episodeNumber"]:02d}')
+                continue
+
+            # Step 3: Search across all configured site clients for the series
+            found = self.find_series_on_clients(series_title, series)
+            if not found:
+                self.logger.warning(f'No match for [{series_title}] on any site client ({", ".join(self.site_client_names)})')
+                total_skipped += len(missing_eps)
+                continue
+
+            client_name, client, matched_series = found
+
+            # Fetch episode list from site
+            try:
+                site_episodes = client.fetch_episodes_list(matched_series)
+            except Exception as e:
+                self.logger.error(f'Failed to fetch episode list for [{series_title}] from {client_name}: {e}')
+                total_failed += len(missing_eps)
+                continue
+
+            if not site_episodes:
+                self.logger.warning(f'No episodes found on {client_name} for [{matched_series.get("title")}]')
+                total_skipped += len(missing_eps)
+                continue
+
+            # Step 5: Download each missing episode
+            series_path = self.sonarr.get_series_path(series)
+            if not series_path:
+                self.logger.error(f'No path found for series [{series_title}]')
+                total_failed += len(missing_eps)
+                continue
+
+            # Ensure download directory exists
+            os.makedirs(series_path, exist_ok=True)
+
+            for ep in missing_eps:
+                season = ep.get('seasonNumber', 1)
+                ep_num = ep.get('episodeNumber', 1)
+                ep_key = f'{series_id}-S{season:02d}E{ep_num:02d}'
+
+                # Skip if already downloaded this session
+                if ep_key in self.completed_downloads:
+                    self.logger.debug(f'Already downloaded {ep_key}, skipping')
+                    continue
+
+                # Map Sonarr episode to site episode
+                site_ep = self.matcher.map_episode(ep, site_episodes, series_id)
+                if not site_ep:
+                    self.logger.warning(f'  Could not map S{season:02d}E{ep_num:02d} to {client_name} episode')
+                    total_skipped += 1
+                    continue
+
+                self.logger.info(f'  Downloading S{season:02d}E{ep_num:02d} -> {client_name} ep {site_ep.get("episode")}')
+
+                try:
+                    success = self.download_episode(
+                        client, series, ep, site_ep, matched_series, site_episodes, series_path
+                    )
+                    if success:
+                        total_downloaded += 1
+                        self.completed_downloads[ep_key] = True
+                        colprint('success', f'    Downloaded: S{season:02d}E{ep_num:02d}')
+                    else:
+                        total_failed += 1
+                        colprint('error', f'    Failed: S{season:02d}E{ep_num:02d}')
+                except Exception as e:
+                    self.logger.error(f'  Download failed for S{season:02d}E{ep_num:02d}: {e}')
+                    self.logger.debug(f'  Stacktrace: {traceback.format_exc()}')
+                    total_failed += 1
+
+            # Step 6: Trigger Sonarr rescan for this series
+            if total_downloaded > 0 or any(
+                f'{series_id}-S{ep.get("seasonNumber", 1):02d}E{ep.get("episodeNumber", 1):02d}' in self.completed_downloads
+                for ep in missing_eps
+            ):
+                self.logger.info(f'Triggering Sonarr rescan for [{series_title}]')
+                self.sonarr.trigger_rescan(series_id)
+
+        # Cycle summary
+        cycle_time = time.time() - cycle_start
+        summary = (
+            f'Cycle complete in {pretty_time(int(cycle_time), fmt="h m s")}: '
+            f'{total_downloaded} downloaded, {total_skipped} skipped, {total_failed} failed'
+        )
+        self.logger.info(summary)
+        colprint('header', f'\n{summary}')
+
+    def download_episode(self, client, sonarr_series: Dict, sonarr_ep: Dict,
+                         site_ep: Dict, site_series: Dict, all_site_eps: List,
+                         series_path: str) -> bool:
+        '''
+        Download a single episode using the site client's infrastructure.
+        Returns True on success, False on failure.
+        '''
+        try:
+            # Build episode range for just this one episode
+            ep_num = float(site_ep.get('episode', 0))
+            ep_ranges = {
+                'start': ep_num,
+                'end': ep_num,
+                'specific_no': []
+            }
+
+            # Fetch episode links from site client
+            download_links = client.fetch_episode_links(all_site_eps, ep_ranges)
+            if not download_links or ep_num not in download_links:
+                self.logger.error(f'No download links returned for episode {ep_num}')
+                return False
+
+            ep_links = download_links[ep_num]
+            if 'error' in ep_links:
+                self.logger.error(f'Site returned error for episode {ep_num}: {ep_links["error"]}')
+                return False
+
+            # Get available resolutions
+            available_resolutions = [k for k in ep_links.keys() if k not in ('error', 'original')]
+            if not available_resolutions:
+                self.logger.error(f'No resolutions available for episode {ep_num}')
+                return False
+
+            # Select best resolution matching our quality preference
+            target_res = str(self.quality)
+            selected_res = client._resolution_selector(available_resolutions, target_res,
+                                                       client.selector_strategy)
+            if not selected_res:
+                selected_res = available_resolutions[0]
+
+            res_data = ep_links.get(selected_res)
+            if not res_data or 'downloadLink' not in res_data:
+                self.logger.error(f'No download link for resolution {selected_res}')
+                return False
+
+            download_link = res_data['downloadLink']
+            download_type = res_data.get('downloadType', 'hls')
+
+            # Generate Sonarr-compatible filename
+            extension = 'mp4'  # UDB outputs mp4 after muxing
+            filename = self.sonarr.get_episode_filename(sonarr_series, sonarr_ep, extension)
+
+            # Build output path with season folder
+            season = sonarr_ep.get('seasonNumber', 1)
+            season_folder = os.path.join(series_path, f'Season {season:02d}')
+            os.makedirs(season_folder, exist_ok=True)
+            output_path = os.path.join(season_folder, filename)
+
+            # Skip if file already exists
+            if os.path.isfile(output_path) and os.path.getsize(output_path) > 0:
+                self.logger.info(f'File already exists: {output_path}')
+                return True
+
+            # Set up download config for this episode
+            dl_config = dict(self.downloader_config)
+            dl_config['download_dir'] = season_folder
+            dl_config['_controller'] = DownloadController()
+
+            # Build episode details dict for UDB's downloader
+            ep_details = {
+                'episodeName': filename,
+                'downloadLink': download_link,
+                'downloadType': download_type,
+                'season': season,
+                'type': 'tv'
+            }
+
+            # Add audio link if available (for HLS with separate audio)
+            if 'audioLink' in res_data and res_data['audioLink']:
+                ep_details['audio'] = res_data['audioLink']
+
+            # Add subtitles if available
+            site_ep_data = client.udb_episode_dict.get(ep_num, {})
+            if 'subtitles' in site_ep_data:
+                ep_details['subtitles'] = site_ep_data['subtitles']
+            if 'encrypted_subs_details' in site_ep_data:
+                ep_details['encrypted_subs_details'] = site_ep_data['encrypted_subs_details']
+
+            # Use UDB's downloader infrastructure
+            from Utils.HLSDownloader import HLSDownloader
+            from Utils.BaseDownloader import BaseDownloader
+
+            # 'embed' download type (Asiaflix) needs yt-dlp: the links are
+            # embed-page URLs (streamtape/mixdrop/vidmoly), not direct m3u8/mp4
+            if self.downloader_type == 'yt-dlp' or download_type == 'embed':
+                if download_type == 'embed' and self.downloader_type != 'yt-dlp':
+                    self.logger.info('Embed download type requires yt-dlp backend — using yt-dlp for this episode')
+                # yt-dlp backend (kisskh-dl style): robust HLS/MP4/embed download
+                from Utils.YtDlpDownloader import YtDlpDownloader
+                dl_config = dict(self.downloader_config)
+                dl_config['download_dir'] = season_folder
+                dl_config['quality'] = int(selected_res)
+                dl_config['referer'] = getattr(client, 'base_url', '')
+                dl_config['_aes_decrypt'] = getattr(client, '_aes_decrypt', None)
+                dl_client = YtDlpDownloader(dl_config, ep_details)
+                self.logger.info(f'Starting download: {filename} ({selected_res}p, {download_type}, yt-dlp)')
+                status, msg = dl_client.start_download(download_link)
+                if status == 0:
+                    dl_client.download_subtitles()
+                if status != 0:
+                    self.logger.error(f'Download failed: {msg}')
+                    return False
+                self.logger.info(f'Download completed: {filename}')
+                return True
+
+            if download_type == 'hls':
+                dl_client = HLSDownloader(dl_config, ep_details)
+            elif download_type == 'mp4':
+                dl_client = BaseDownloader(dl_config, ep_details)
+            else:
+                self.logger.error(f'Unknown download type: {download_type}')
+                return False
+
+            self.logger.info(f'Starting download: {filename} ({selected_res}p, {download_type})')
+            status, msg = dl_client.start_download(download_link)
+            dl_client._cleanup_out_dirs()
+
+            if status != 0:
+                self.logger.error(f'Download failed: {msg}')
+                return False
+
+            self.logger.info(f'Download completed: {filename}')
+            return True
+
+        except Exception as e:
+            self.logger.error(f'Exception during download: {e}')
+            self.logger.debug(f'Stacktrace: {traceback.format_exc()}')
+            return False
+
+    def run(self):
+        '''Main daemon loop.'''
+        # Initialize all components
+        colprint_init(self.disable_colors)
+        self.init_logging()
+        self.check_ffmpeg()
+        self.init_sonarr()
+        self.init_matcher()
+        self.init_site_client()
+
+        colprint('header', f'\nUDB-Sonarr v{__version__} daemon started')
+        colprint('results', f'  Sonarr: {self.config["SonarrConfig"]["url"]}')
+        colprint('results', f'  Site clients: {", ".join(self.site_clients.keys())}')
+        colprint('results', f'  Downloader: {self.downloader_type}')
+        colprint('results', f'  Quality: {self.quality}p')
+        colprint('results', f'  Poll interval: {self.poll_interval // 60} minutes')
+        colprint('results', f'  Mode: {"DRY-RUN" if self.dry_run else "ACTIVE"}')
+        colprint('results', f'  Once: {self.once}')
+
+        if self.dry_run:
+            colprint('yellow', '\n  WARNING: Dry-run mode - no files will be downloaded')
+
+        # Main loop
+        while True:
+            try:
+                self.run_cycle()
+            except KeyboardInterrupt:
+                colprint('predefined', '\nInterrupted by user')
+                self.logger.info('Daemon stopped by user (KeyboardInterrupt)')
+                break
+            except ExitException as ee:
+                if int(str(ee)) == 0:
+                    break
+                self.logger.error(f'ExitException: {ee}')
+            except Exception as e:
+                self.logger.error(f'Cycle error: {e}')
+                self.logger.debug(f'Stacktrace: {traceback.format_exc()}')
+
+            if self.once:
+                colprint('predefined', '\n--once mode: exiting after single cycle')
+                break
+
+            colprint('predefined', f'\nNext poll in {self.poll_interval // 60} minutes...')
+            try:
+                time.sleep(self.poll_interval)
+            except KeyboardInterrupt:
+                colprint('predefined', '\nInterrupted during sleep')
+                break
+
+        # Cleanup
+        for client in self.site_clients.values():
+            try:
+                client.cleanup()
+            except Exception:
+                pass
+
+        # Close log handlers
+        for handler in self.logger.handlers:
+            handler.close()
+            self.logger.removeHandler(handler)
+
+        colprint('results', '\nUDB-Sonarr daemon stopped.')
+
+
+def main():
+    '''Entry point.'''
+    parser = argparse.ArgumentParser(
+        description='UDB-Sonarr: Auto-download missing Sonarr episodes via UDB site clients.'
+    )
+    parser.add_argument('-c', '--conf', default='config_sonarr.yaml',
+                        help='configuration file (default: config_sonarr.yaml)')
+    parser.add_argument('-D', '--debug', action='store_true', help='enable debug logging')
+    parser.add_argument('-l', '--log-file', help='custom log file name')
+    parser.add_argument('-v', '--version', action='store_true', help='show version')
+    parser.add_argument('--once', action='store_true',
+                        help='run a single poll cycle then exit (no loop)')
+    parser.add_argument('--dry-run', action='store_true',
+                        help='check for missing episodes but do not download')
+    parser.add_argument('-dc', '--disable-colors', action='store_true', help='disable colored output')
+    parser.add_argument('--skip-update-check', action='store_true', default=True,
+                        help='skip UDB update checks (always skipped in daemon mode)')
+
+    args = parser.parse_args()
+
+    if args.version:
+        print(f'UDB-Sonarr v{__version__}')
+        sys.exit(0)
+
+    # Load config
+    config_file = args.conf
+    if not os.path.isfile(config_file):
+        # Try default UDB config as fallback
+        config_file = 'config_udb.yaml'
+        if not os.path.isfile(config_file):
+            print(f'Error: Config file not found. Create config_sonarr.yaml with SonarrConfig.')
+            print(f'See config_sonarr.yaml.example for a template.')
+            sys.exit(1)
+
+    config = load_yaml(config_file)
+
+    # Run daemon
+    daemon = UDBSonarrDaemon(config, args)
+    daemon.run()
+
+
+if __name__ == '__main__':
+    main()

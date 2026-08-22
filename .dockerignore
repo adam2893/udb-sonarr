@@ -1,0 +1,9 @@
+.git
+__pycache__
+*.py[cod]
+*.log
+*.mp4
+logs
+dev_dump
+Clients/*.json
+*.md

@@ -1,125 +1,144 @@
-# UDB [Ultimate-Download-Bot]
+# UDB-Sonarr
 
-Welcome to the UDB, the Ultimate-Download-Bot for Anime, Drama, Movies & TV Shows! 🎉
+Automatically download missing episodes from Asian streaming sites (KissKh, AnimePahe, Asiaflix) straight into your Sonarr library.
 
-## Current Status (as on 2024-10-08)
-| S.No | Category           | Website                                   | Status |
-| :--: | :----------------- | :---------------------------------------: | :----: |
-|   1  | Anime              | [GogoAnime](https://anitaku.to/)          | Active (But no updates after Nov' 24, 2024) |
-|   2  | Anime              | [AnimePahe](https://animepahe.ru/)        | Active |
-|   3  | Drama              | [MyAsianTV](https://myasiantv.ac/)        | Inactive |
-|   4  | Drama              | [Asianbxkiun](https://asianbxkiun.pro/)   | Active (But no updates after Nov' 24, 2024) |
-|   5  | Movies & TV Shows  | [Vidsrc](https://vidsrc.to/)              | Support discontinued |
-|   6  | Movies & TV Shows  | [Superembed](https://streambucket.net/)   | Support discontinued |
-|   7  | Anime, Drama, Movies & TV Shows | [KissKh](https://kisskh.co/) | Active (But no multi-resolutions) |
+UDB-Sonarr is a fork of [UDB](https://github.com/Prudhvi-pln/udb) (Ultimate-Download-Bot) that adds a **Sonarr integration daemon**. Instead of running UDB's interactive CLI, it polls Sonarr for monitored series with missing episodes, searches the site clients, downloads the episodes into Sonarr's series folders, and triggers a rescan so Sonarr imports them.
 
-## Insipiration
+## How it works
 
-It is a weekend and you found a good anime/series to binge-watch. But the effort of downloading all episodes (especially for series like One Piece 😅), the pain is unimaginable. _Ofcourse, you have an option to watch online, but what about people with poor unstable networks, or students with limited access to wifi_. So, this is created to help all such troubled souls. As Ikta Solorok once said: `Laziness is the mother of evolution`
+```
+Sonarr (monitored series + missing episodes)
+   ▲                    │
+   │  ① polls API       │  ④ drops files into series folder
+   │                    ▼
+┌──┴───────────────────────────────┐
+│   udb_sonarr daemon               │
+│   ② search KissKh → AnimePahe →   │
+│      Asiaflix (in order, fallback)│
+│   ③ download via UDB pipeline     │
+│      or yt-dlp backend            │
+└──────────────────────────────────┘
+   │
+   ▼  ⑤ POST /command RescanSeries
+Sonarr imports, renames, moves into library
+```
 
-## Overview
+It acts as a **sidecar**, not a Sonarr indexer/download client — it monitors what Sonarr is missing, fetches it from sites that have no torrent/usenet releases, and hands Sonarr finished files for import.
 
-The UDB is a fantastic tool designed for all the anime, drama, series lovers out there. With just a few clicks in the command line, you can effortlessly download entire series, saving you the hassle of manually downloading each episode one by one.
+## Supported sources
 
-![udb demo](images/udb-demo.gif)
+| Client    | Content                     | Method                              | DRM |
+|-----------|-----------------------------|-------------------------------------|-----|
+| KissKh    | Asian drama / movies / anime | JSON API + quickjs kkey generation  | No  |
+| AnimePahe | Anime                       | JSON API + undetected Chrome        | No  |
+| Asiaflix  | Asian drama / movies        | Server-rendered HTML + embed hosts  | No  |
+
+The daemon tries each configured client in order until one has the series. Client order is configurable (`site_client: all | kisskh | [kisskh, asiaflix]`).
 
 ## Features
 
-- **Batch Download:** Download complete anime series or drama shows or TV shows with a single command.
-- **Fast and Efficient:** The downloader is optimized for speed, allowing you to grab your favorite episodes in no time.
-- **Customizable Options:** Choose specific seasons, episodes, or ranges to download according to your preferences.
-- **Quality Selection:** Select the video quality that suits your needs.
-- **Auto-Retry:** If a download fails, the downloader automatically retries until successful.
-- **Informative Progress Bar:** Track the progress of your downloads with a visually appealing progress bar.
-- **Command Line Interface (CLI) Automation:** UDB provides robust support for CLI arguments, facilitating seamless automation of tasks.
-- **High-speed Downloader:** Optimized to offer best download experience.
-- **Ad-Free Experience:** UDB offers an ad-free downloading experience, ensuring uninterrupted access to your favorite anime, drama, movies, and TV series without any distractions.
-
-## Supported OS
-- Windows
-- Linux
-- Android (Termux only)
+- **Sonarr API integration** — reads monitored series + missing episodes, triggers `RescanSeries` after downloads
+- **Smart series matching** — fuzzy title + year matching, per-season episode offset mapping for multi-season shows
+- **Resilient KissKh client** — kkey token caching, refresh-on-failure retry, optional [KissKH-Api](https://github.com/beorgsh/KissKH-Api) microservice fallback for Cloudflare blocks
+- **Two downloader backends** — UDB's native HLS/MP4 pipeline (AES + encrypted-subtitle support), or a [kisskh-dl](https://github.com/debakarr/kisskh-dl)-style **yt-dlp** wrapper (`downloader_type: yt-dlp`) that also handles embed hosts (streamtape/mixdrop/vidmoly)
+- **Dry-run mode** — see what would download before committing
 
 ## Requirements
 
-To use the UDB, make sure you have the following requirements met:
+- Python 3.8+
+- `ffmpeg` on PATH (used by the HLS downloader)
+- Chrome/Chromium (AnimePahe client)
+- A running [Sonarr](https://sonarr.tv/) instance (v3 or v4)
 
-- Python 3.8 or higher
-- pip
-- Internet connection
-- ffmpeg
-  - Windows:
-    - download ffmpeg from [here](https://ffmpeg.org/download.html)
-    - add to Environment variables > PATH
-  - Linux (Ubuntu):
-    - sudo apt install -y ffmpeg
-  - Android (Termux):
-    - pkg install ffmpeg
+## Quick start (native)
 
-## Installation
+```bash
+git clone https://github.com/adam2893/udb-sonarr.git
+cd udb-sonarr
+pip install -r requirements.txt
 
-1. Clone the repository:
+# ffmpeg required:
+#   macOS:  brew install ffmpeg
+#   Ubuntu: sudo apt install ffmpeg
 
-    ```
-    git clone https://github.com/Prudhvi-pln/udb.git
-    ```
+cp config_sonarr.yaml.example config_sonarr.yaml
+# edit config_sonarr.yaml: SonarrConfig.url + SonarrConfig.api_key
+#   (Sonarr API key: Settings → General → API Key)
 
-2. Navigate to the project directory:
+# Dry run first — lists missing episodes, downloads nothing:
+python3 udb_sonarr.py -c config_sonarr.yaml --once --dry-run
 
-    ```
-    cd udb
-    ```
+# Real run (single pass):
+python3 udb_sonarr.py -c config_sonarr.yaml --once
 
-3. Install the required dependencies:
+# Continuous daemon (default: polls every 30 min):
+python3 udb_sonarr.py -c config_sonarr.yaml
+```
 
-    ```
-    pip install -r requirements.txt
-    ```
-4. Edit the configuration in your favourite editor: __Make sure to set the download path__
+## Docker
 
-    ```
-    vi config_udb.yaml
-    ```
+```bash
+cp config_sonarr.yaml.example config_sonarr.yaml
+# edit config_sonarr.yaml, then:
+docker compose up -d --build
+```
 
-5. You're all set! Start downloading your favorite series by running:
+- Mounts `config_sonarr.yaml` (read-only) into the container
+- Mounts your TV library at `/tv` — **must match the path Sonarr uses**, so downloaded episodes land where Sonarr can import them
+- Uses host networking so `localhost:8989` reaches a Sonarr running on the host
+- If Sonarr runs in Docker on a shared network instead, comment out `network_mode: host` and use the `networks:` section + `http://sonarr:8989` in config
 
-    ```
-    python udb.py
-    ```
+See `docker-compose.yml` for both networking options.
 
-## Usage
+## Configuration
 
-UDB is super easy to use. Follow these steps:
+All settings live in `config_sonarr.yaml` (copy from `config_sonarr.yaml.example`).
 
-1. Launch your favorite command-line interface.
-2. Navigate to the project directory.
-3. Run the following command:
+Key options:
 
-   ```
-   python udb.py
-   ```
+```yaml
+SonarrConfig:
+  url: http://localhost:8989
+  api_key: YOUR_SONARR_API_KEY
+  quality: 1080                    # 360 / 480 / 720 / 1080
+  downloader_type: udb             # udb | yt-dlp
+  site_client: all                 # all | kisskh | animepahe | asiaflix | [list]
+  poll_interval_minutes: 30
+  season_mappings: {}              # multi-season episode offset overrides
+```
 
-4. Sit back, relax, and let the magic happen! The downloader will guide you through the process and download your selected series/movie.
+**Multi-season shows:** KissKh/Asiaflix use flat episode numbering while Sonarr uses S01E05. Single-season shows map 1:1 automatically. For multi-season shows, add `season_mappings` keyed by Sonarr series ID:
 
-5. Run `python udb.py -h` for more information about the cli arguments
+```yaml
+SonarrConfig:
+  season_mappings:
+    123:          # Sonarr series ID (from the series URL)
+      1: 0        # Season 1 starts at site ep 1
+      2: 16       # Season 2 starts at site ep 17
+```
 
-## Contributing
+## CLI
 
-I welcome contributions from fellow anime and drama enthusiasts like you! If you have any ideas, improvements, or bug fixes, feel free to open an issue or submit a pull request. Let's make this downloader even more amazing together!
+```
+usage: udb_sonarr.py [-h] [-c CONF] [-D] [-l LOG_FILE] [-v] [--once] [--dry-run] [-dc] [--skip-update-check]
 
-## Acknowledgements
+  -c, --conf CONF       configuration file (default: config_sonarr.yaml)
+  -D, --debug           enable debug logging
+  -l, --log-file FILE   custom log file name
+  -v, --version         show version
+  --once                run a single poll cycle then exit
+  --dry-run             check for missing episodes but do not download
+  -dc, --disable-colors disable colored output
+```
 
-I would like to express my gratitude to the creators and developers of the open-source libraries and tools used in this project. Without their contributions, this downloader would not be possible.
- - [animdl](https://github.com/justfoolingaround/animdl)
- - [dra-cla](https://github.com/CoolnsX/dra-cla/blob/main/dra-cla)
- - [vidsrc-to-resolver](https://github.com/Ciarands/vidsrc-to-resolver)
- - [vidplay-keys](https://github.com/KillerDogeEmpire/vidplay-keys)
- - [m3u8downloader](https://github.com/josephcappadona/m3u8downloader)
+## Credits
 
-## Known issues
- - Progress bar printing duplicate lines for same file
-   - This issue occurs due to ascii characters used and depends on the command line (Prefer Powershell in Windows)
+- [UDB](https://github.com/Prudhvi-pln/udb) — the underlying downloader framework and site clients
+- [kisskh-dl](https://github.com/debakarr/kisskh-dl) — yt-dlp downloader pattern and subtitle decryption keys
+- [KissKH-Api](https://github.com/beorgsh/KissKH-Api) — optional Cloudflare-bypass fallback microservice
 
----
+## License
 
-Start binge-watching your favorite movies / series like never before! Happy downloading! 🍿✨
+MIT (see LICENSE.md)
+
+> **Note:** This tool interfaces with third-party streaming sites. Use responsibly and respect applicable copyright laws in your jurisdiction.

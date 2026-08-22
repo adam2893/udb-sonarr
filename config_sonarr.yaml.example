@@ -1,0 +1,158 @@
+# UDB-Sonarr Configuration
+# Copy this file to config_sonarr.yaml and edit with your settings.
+
+# ─────────────────────────────────────────────────────────────
+# Sonarr Configuration (REQUIRED)
+# ─────────────────────────────────────────────────────────────
+SonarrConfig:
+  # Sonarr URL (include http:// or https://)
+  url: http://localhost:8989
+  
+  # API key - find in Sonarr: Settings > General > API Key
+  api_key: YOUR_SONARR_API_KEY_HERE
+  
+  # API version: 'v3' for Sonarr v3, 'v4' for Sonarr v4
+  api_version: v3
+  
+  # Root folder override (optional)
+  # If set, downloads go to: {root_folder}/{Series Title (Year)}/Season XX/
+  # If unset, uses the path from Sonarr's series config
+  root_folder: /media/tv
+  
+  # Poll interval in minutes (how often to check for missing episodes)
+  poll_interval_minutes: 30
+  
+  # Quality preference: 360, 480, 720, or 1080
+  quality: 1080
+
+  # Downloader backend:
+  #   'udb'    - UDB's built-in HLS/MP4 downloader (default, no extra deps)
+  #   'yt-dlp' - yt-dlp wrapper (kisskh-dl style). More robust format
+  #              selection + retries. Requires: pip install yt-dlp
+  downloader_type: udb
+  
+  # Which site clients to use for downloading
+  # Can be a single name, a list, or 'all'
+  # Options: kisskh, animepahe
+  # 'all' tries each client in order until one has the series
+  site_client: all
+  
+  # Series matching settings
+  match_threshold: 0.6        # Minimum title similarity (0.0-1.0)
+  verify_year: true           # Boost score if release years match
+  
+  # Season mapping overrides for multi-season shows
+  # Only needed when KissKh uses flat numbering across seasons
+  # Format: { sonarr_series_id: { season_number: kisskh_episode_offset } }
+  # Example: if KissKh lists S1 (eps 1-16) and S2 (eps 17-32) as one sequence:
+  #   season_mappings:
+  #     123:          # Sonarr series ID (find in Sonarr URL: /series/123)
+  #       1: 0        # Season 1 starts at KissKh ep 1 (offset 0)
+  #       2: 16       # Season 2 starts at KissKh ep 17 (offset 16)
+  season_mappings: {}
+
+# ─────────────────────────────────────────────────────────────
+# KissKh Client Configuration
+# ─────────────────────────────────────────────────────────────
+Anime, Drama, Movies & TV Shows (Kisskh):
+  # KissKh base URL (domain rotates - update if kisskh.nl stops working)
+  base_url: https://kisskh.nl/
+  search_url: api/DramaList/Search?q=
+  series_url: api/DramaList/Drama/
+  episode_url: api/DramaList/Episode/{id}.png?kkey=
+  subtitles_url: api/Sub/{id}?kkey=
+  
+  # Download directory for temporary files before Sonarr import
+  download_dir: /tmp/udb-sonarr
+  
+  # HTTP request timeout
+  request_timeout: 30
+  
+  # Resolution selection strategy when exact match not available:
+  # 'lowest' - pick next lowest resolution
+  # 'highest' - pick next highest resolution
+  # 'absolute' - require exact match or fail
+  alternate_resolution_selector: 'highest'
+  
+  # Preferred/blacklisted CDN URLs (optional)
+  preferred_urls: []
+  blacklist_urls: []
+
+  # ── KissKH-Api merge: kkey resilience ─────────────────────
+  # Cache generated kkey tokens so quickjs isn't re-run per episode
+  kkey_cache: true
+
+  # Optional local KissKH-Api microservice (beorgsh/KissKH-Api) used as a
+  # fallback when direct token generation/stream fetch fails (Cloudflare
+  # block, JS change). Leave empty to disable. The microservice bypasses
+  # Cloudflare with a real browser and exposes GET /resolve/{episode_id}.
+  # Run it:  uvicorn main:app --port 8000  (see its README)
+  kisskh_api_fallback_url: ''
+
+# ─────────────────────────────────────────────────────────────
+# AnimePahe Client Configuration
+# ─────────────────────────────────────────────────────────────
+Anime (Animepahe):
+  base_url: https://animepahe.com/
+  search_url: api?m=search&q=
+  episodes_list_url: api?m=release&sort=episode_asc&id=
+  download_link_url: api?m=links&p=kwik&id=
+  episode_url: play/{anime_id}/{episode_id}
+  
+  download_dir: /tmp/udb-sonarr
+  request_timeout: 30
+  alternate_resolution_selector: 'highest'
+
+# ─────────────────────────────────────────────────────────────
+# Asiaflix Client Configuration
+# ─────────────────────────────────────────────────────────────
+# Asian dramas/movies via third-party embed hosts (streamtape,
+# mixdrop, vidmoly). No auth/DRM — episodes are scraped from
+# server-rendered HTML and downloaded via the yt-dlp backend
+# (requires downloader_type: yt-dlp, or embed links auto-route there).
+Asian Dramas & Movies (Asiaflix):
+  base_url: https://asiaflix.net/
+  search_url: search?q=
+  drama_url: drama/
+
+  download_dir: /tmp/udb-sonarr
+  request_timeout: 30
+
+  # Embed hosts ordered by preference. yt-dlp supports streamtape,
+  # mixdrop, and vidmoly natively. Others are tried only as fallback.
+  source_priority: ['streamtape', 'mixdrop', 'vidmoly', 'vidbasic', 'asianctv']
+
+  # Max search results to consider
+  search_limit: 10
+
+  alternate_resolution_selector: 'highest'
+
+# ─────────────────────────────────────────────────────────────
+# Downloader Configuration (shared across all site clients)
+# ─────────────────────────────────────────────────────────────
+DownloaderConfig:
+  # Default download directory (overridden by Sonarr root_folder)
+  download_dir: /tmp/udb-sonarr
+  
+  # Temp directory for in-progress downloads
+  # 'auto' creates a temp folder under the target directory
+  temp_download_dir: auto
+  
+  # Concurrency for downloading HLS segments within a single file
+  concurrency_per_file: auto
+  
+  # HTTP request timeout
+  request_timeout: 30
+  
+  # Max parallel episode downloads
+  max_parallel_downloads: 2
+
+# ─────────────────────────────────────────────────────────────
+# Logging Configuration
+# ─────────────────────────────────────────────────────────────
+LoggerConfig:
+  log_level: INFO
+  log_dir: logs
+  max_log_size_in_kb: 100
+  log_backup_count: 3
+  log_retention_days: 7

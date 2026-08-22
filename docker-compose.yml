@@ -1,0 +1,25 @@
+services:
+  udb-sonarr:
+    build: .
+    container_name: udb-sonarr
+    restart: unless-stopped
+    volumes:
+      # Your real config (copy config_sonarr.yaml.example -> config_sonarr.yaml first)
+      - ./config_sonarr.yaml:/app/config_sonarr.yaml:ro
+      # Where Sonarr stores its media. MUST match the paths Sonarr itself sees,
+      # so downloaded episodes land where Sonarr can import them.
+      - /path/to/your/tv:/tv
+      # Logs from the daemon
+      - ./logs:/app/logs
+    environment:
+      - TZ=UTC
+    # If Sonarr runs on the host machine (not in Docker), the daemon needs to
+    # reach it. Use host networking so localhost:8989 works:
+    network_mode: host
+    # Alternative: if Sonarr runs in a container on a shared network, replace
+    # network_mode: host with:
+    #   networks: [sonarr]
+    # and set SonarrConfig.url to http://sonarr:8989 in config_sonarr.yaml
+    # networks:
+    #   sonarr:
+    #     external: true

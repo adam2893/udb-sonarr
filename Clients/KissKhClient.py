@@ -42,6 +42,10 @@ class KissKhClient(BaseClient):
         # key & iv for decrypting subtitles, default encryption.
         self.DECRYPT_SUBS_KEY3 = b'sWODXX04QRTkHdlZ'
         self.DECRYPT_SUBS_IV3 = b'8pwhapJeC4hrS9hO'
+        # kkey token cache + resilience (kisskh-dl / KissKH-Api merge)
+        self.token_cache = {}
+        self.use_kkey_cache = config.get('kkey_cache', True)
+        self.kisskh_api_fallback_url = config.get('kisskh_api_fallback_url', '').rstrip('/')
 
     # step-1.1
     def _show_search_results(self, key, details):
@@ -57,6 +61,12 @@ class KissKhClient(BaseClient):
         '''
         create token required to fetch stream & subtitle links
         '''
+        # use cached token if available
+        cache_key = (episode_id, uid)
+        if self.use_kkey_cache and cache_key in self.token_cache:
+            self.logger.debug(f'Using cached token for {cache_key}')
+            return self.token_cache[cache_key]
+
         # js code to generate token from kisskh site
         if self.token_generation_js_code is None:
             self.logger.debug('Fetching token generation js code...')
@@ -72,7 +82,52 @@ class KissKhClient(BaseClient):
         # evaluate js code to generate token
         self.logger.debug(f'Evaluating js code to generate token using {episode_id = } and {uid = }')
         token = self.quickjs_context.eval(self.token_generation_js_code + f'_0x54b991({episode_id}, null, "2.8.10", "{uid}", 4830201,  "kisskh", "kisskh", "kisskh", "kisskh", "kisskh", "kisskh")')
+        self.token_cache[cache_key] = token
         return token
+
+    # step-4.1.1
+    def _fetch_via_kisskh_api(self, episode):
+        '''
+        fallback to local KissKH-Api microservice (beorgsh/KissKH-Api) which
+        bypasses Cloudflare using a real browser and returns stream + subtitles
+        Returns (stream_link, subtitles_dict) or None on failure
+        '''
+        if not self.kisskh_api_fallback_url:
+            return None
+
+        episode_id = episode.get('episodeId')
+        try:
+            self.logger.debug(f'Fetching episode {episode_id} via KissKH-Api fallback...')
+            response = self.req_session.get(
+                f'{self.kisskh_api_fallback_url}/resolve/{episode_id}',
+                timeout=30
+            )
+            if response.status_code != 200:
+                self.logger.debug(f'KissKH-Api fallback failed with code: {response.status_code}')
+                return None
+            data = response.json()
+        except Exception as e:
+            self.logger.debug(f'KissKH-Api fallback request failed. Error: {e}')
+            return None
+
+        # guard: response may not be a dict, keys may be missing
+        if not isinstance(data, dict):
+            self.logger.debug(f'KissKH-Api fallback returned unexpected response: {data}')
+            return None
+
+        stream = data.get('stream') or {}
+        stream_link = stream.get('Video') or stream.get('BackupVideo')
+        if not stream_link:
+            self.logger.debug(f'No stream link found in KissKH-Api fallback response for episode {episode_id}')
+            return None
+
+        subtitles_dict = {
+            s.get('label'): s.get('src')
+            for s in (data.get('subtitles') or [])
+            if isinstance(s, dict) and s.get('src')
+        }
+        self.logger.info(f'Obtained stream link via KissKH-Api fallback for episode {episode_id}')
+        return stream_link, subtitles_dict
 
     # step-1
     def search(self, keyword):
@@ -195,15 +250,43 @@ class KissKhClient(BaseClient):
             if (float(episode.get('episode')) >= ep_start and float(episode.get('episode')) <= ep_end) or (float(episode.get('episode')) in specific_eps):
                 self.logger.debug(f'Processing {episode = }')
 
+                # try direct path to fetch stream link, with one token-refresh retry
+                fallback_subtitles = None
+                episode_id = episode.get('episodeId')
+                ep = episode.get('episode')
                 self.logger.debug('Fetching stream token')
-                token = self._get_token(episode.get('episodeId'), self.viGuid)
+                token = self._get_token(episode_id, self.viGuid)
                 self.logger.debug(f'Fetching stream link')
-                dl_links = self._send_request(self.episode_url.format(id=str(episode.get('episodeId'))) + token, return_type='json')
+                try:
+                    dl_links = self._send_request(self.episode_url.format(id=str(episode_id)) + token, return_type='json')
+                except Exception:
+                    dl_links = None
                 if dl_links is None:
-                    self.logger.warning(f'Failed to fetch stream link for episode: {episode.get("episode")}')
-                    continue
-                link = dl_links.get('Video')
-                self.logger.debug(f'Extracted stream link: {link = }')
+                    # one retry with a freshly generated token
+                    self.logger.debug(f'Token refresh retry for episode {ep}')
+                    self.token_cache.pop((episode_id, self.viGuid), None)
+                    token = self._get_token(episode_id, self.viGuid)
+                    try:
+                        dl_links = self._send_request(self.episode_url.format(id=str(episode_id)) + token, return_type='json')
+                    except Exception:
+                        dl_links = None
+
+                if dl_links is None:
+                    # fallback to KissKH-Api microservice if configured
+                    if self.kisskh_api_fallback_url:
+                        self.logger.debug(f'Falling back to KissKH-Api for episode {ep}')
+                        fallback = self._fetch_via_kisskh_api(episode)
+                        if fallback is not None:
+                            link, fallback_subtitles = fallback
+                        else:
+                            self.logger.warning(f'Failed to fetch stream link for episode: {ep}')
+                            continue
+                    else:
+                        self.logger.warning(f'Failed to fetch stream link for episode: {ep}')
+                        continue
+                else:
+                    link = dl_links.get('Video')
+                    self.logger.debug(f'Extracted stream link: {link = }')
 
                 # skip if no stream link found
                 if link is None:
@@ -211,22 +294,27 @@ class KissKhClient(BaseClient):
 
                 # check if link has countdown timer for upcoming releases
                 if 'tickcounter.com' in link:
-                    self.logger.debug(f'Episode {episode.get("episode")} is not released yet')
-                    self._show_episode_links(episode.get('episode'), {'error': 'Not Released Yet'}, display_prefix)
+                    self.logger.debug(f'Episode {ep} is not released yet')
+                    self._show_episode_links(ep, {'error': 'Not Released Yet'}, display_prefix)
                     continue
 
                 # add episode details & stream link to udb dict
-                self._update_udb_dict(episode.get('episode'), episode)
-                self._update_udb_dict(episode.get('episode'), {'streamLink': link, 'refererLink': self.base_url})
+                self._update_udb_dict(ep, episode)
+                self._update_udb_dict(ep, {'streamLink': link, 'refererLink': self.base_url})
 
                 # get subtitles dictionary (key:value = language:link) and add to udb dict
                 if episode.get('episodeSubs', 0) > 0:
-                    self.logger.debug('Subtitles found. Fetching subtitles token')
-                    token = self._get_token(episode.get('episodeId'), self.subGuid)
-                    self.logger.debug('Fetching subtitles for the episode...')
-                    subtitles = self._send_request(self.subtitles_url.format(id=str(episode.get('episodeId'))) + token, return_type='json')
-                    subtitles = { sub['label']: sub['src'] for sub in subtitles }
-                    self._update_udb_dict(episode.get('episode'), {'subtitles': subtitles})
+                    if fallback_subtitles is not None:
+                        # fallback already returned subtitles
+                        self.logger.debug('Using subtitles from KissKH-Api fallback')
+                        subtitles = fallback_subtitles
+                    else:
+                        self.logger.debug('Subtitles found. Fetching subtitles token')
+                        token = self._get_token(episode_id, self.subGuid)
+                        self.logger.debug('Fetching subtitles for the episode...')
+                        subtitles = self._send_request(self.subtitles_url.format(id=str(episode_id)) + token, return_type='json')
+                        subtitles = { sub['label']: sub['src'] for sub in subtitles }
+                    self._update_udb_dict(ep, {'subtitles': subtitles})
                     # check if subtitles are encrypted and add decryption details to udb dict
                     # every subtitle can have it's own encryption type. So, check all subtitles for encryption and add decryption details to udb dict
                     encrypted_subs_details = {}
@@ -244,7 +332,7 @@ class KissKhClient(BaseClient):
 
                     if encrypted_subs_details:
                         self.logger.debug(f'Encrypted subtitles found. Adding decryption details to udb dict...')
-                        self._update_udb_dict(episode.get('episode'), {'encrypted_subs_details': encrypted_subs_details})
+                        self._update_udb_dict(ep, {'encrypted_subs_details': encrypted_subs_details})
 
                 # get actual download links
                 m3u8_links = [{'file': link, 'type': 'hls'}] if link.split('?')[0].endswith('.m3u8') else [{'file': link, 'type': 'mp4'}]

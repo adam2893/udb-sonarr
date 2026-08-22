@@ -8,4 +8,7 @@ __pycache__
 # User-specific UDB files
 Clients/*.json
 dev_dump
-*.yaml
+# Real configs contain secrets — keep them out of git.
+# The .example template is committed.
+config_sonarr.yaml
+config_udb.yaml
