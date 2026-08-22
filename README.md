@@ -84,14 +84,38 @@ cp config_sonarr.yaml.example config/config_sonarr.yaml
 docker compose up -d --build
 ```
 
-- Mounts the `config/` directory at `/config` (contains `config_sonarr.yaml`)
-- Mounts your TV library at `/tv` — **must match the path Sonarr uses**, so downloaded episodes land where Sonarr can import them
+Container paths (see `docker-compose.yml`):
+
+| Container path | Host path | Purpose |
+|---|---|---|
+| `/config` | `./config` | `config_sonarr.yaml` |
+| `/tv` | `/path/to/your/tv` | TV library — **must match the path Sonarr uses**, so downloaded episodes land where Sonarr can import them |
+| `/downloads` | `./downloads` | temp downloads *(optional)* |
+| `/app/logs` | `./logs` | logs *(optional)* |
+| `/data/media` | *(Approach B only)* | parent of the TV folder — see below |
+
+**Two valid mount approaches** — pick ONE, don't mix:
+
+- **Approach A (recommended):** mount the TV library at `/tv` only. Set `UDB_ROOT_FOLDER` to match the container path Sonarr would use. Don't create a `/data/media` mount that points to the same place.
+- **Approach B:** mount the parent directory at `/data/media` and set `UDB_ROOT_FOLDER=/data/media/tv`. Skip the `/tv` mount — the daemon writes into `/data/media/tv/<series>` and Sonarr scans the same folder.
+
+> **Never** mount `/data/media` and `/tv` to the **same** host folder — that double-nests the path (`tv/tv/BLANK THE SERIES`) and Sonarr can't import anything.
+
 - Uses host networking so `localhost:8989` reaches a Sonarr running on the host
 - If Sonarr runs in Docker on a shared network instead, comment out `network_mode: host` and use the `networks:` section + `http://sonarr:8989` in config
 
 See `docker-compose.yml` for both networking options.
 
 Pre-built image: `ghcr.io/adam2893/udb-sonarr:latest` (built automatically by CI on every push to `main`).
+
+## How paths work
+
+The daemon reads each series' path from Sonarr and downloads into that folder. Two things decide the final path:
+
+1. Sonarr reports a series path like `/tv/BLANK THE SERIES`.
+2. If `UDB_ROOT_FOLDER` is set, the daemon keeps only the series folder name (`BLANK THE SERIES`) and joins it to the root folder — in effect **replacing the `/tv` prefix** with the root folder value. Unset, it uses Sonarr's path as-is.
+
+The final path must exist on the host **and** match where Sonarr scans. If the mount layout makes the two disagree, downloads land somewhere Sonarr never looks — or in a container path that doesn't exist at all.
 
 ### Unraid
 
@@ -106,10 +130,15 @@ Pre-built image: `ghcr.io/adam2893/udb-sonarr:latest` (built automatically by CI
 | Network type | `Host` |
 
 Paths (click **Add another Path** for each):
-- Container Path `/config` → Host Path `/mnt/user/appdata/udb-sonarr/config`
-- Container Path `/tv` → Host Path `/mnt/user/media/tv` ← **use the same folder Sonarr uses for TV**, or imports won't match
-- Container Path `/downloads` → Host Path `/mnt/user/appdata/udb-sonarr/downloads` *(optional)*
-- Container Path `/app/logs` → Host Path `/mnt/user/appdata/udb-sonarr/logs` *(optional)*
+- Container Path `/config` → Host Path `/mnt/user/appdata/udb-sonarr/config` (config file)
+- Container Path `/tv` → Host Path `/mnt/user/data/media/tv` (where Sonarr stores TV shows)
+- Container Path `/app/logs` → Host Path `/mnt/user/appdata/udb-sonarr/logs` (logs)
+- Container Path `/downloads` → Host Path `/mnt/user/appdata/udb-sonarr/downloads` *(optional temp downloads)*
+- Container Path `/data/media` → Host Path `/mnt/user/data/media` (**NOT** `/mnt/user/data/media/tv` — must be the **parent** of the TV folder)
+
+> **⚠️ Avoid double-nesting:** `/data/media` must NOT point to the same host folder as `/tv`. If both resolve to `/mnt/user/data/media/tv`, the daemon writes `tv/tv/...` and Sonarr never sees the files. `/tv` is the TV folder itself; `/data/media` is its parent.
+
+**Path resolution example:** Sonarr reports `/mnt/user/data/media/tv/BLANK THE SERIES`. With `UDB_ROOT_FOLDER=/data/media/tv` the daemon writes to `/data/media/tv/BLANK THE SERIES`, which maps through the `/data/media` mount back to host `/mnt/user/data/media/tv/BLANK THE SERIES` — the exact folder Sonarr scans.
 
 **2. Set the settings in the GUI variables** — click **Add another Variable** for each:
 
@@ -118,6 +147,7 @@ Paths (click **Add another Path** for each):
 | `TZ` | `America/New_York` | timezone |
 | `UDB_SONARR_URL` | `http://localhost:8989` | Sonarr address |
 | `UDB_API_KEY` | *(your key)* | Sonarr → Settings → General → API Key |
+| `UDB_ROOT_FOLDER` | `/data/media/tv` | container path prefix for downloaded files — replaces Sonarr's `/tv` prefix (see [How paths work](#how-paths-work)); must point at the TV folder **inside the container** |
 | `UDB_QUALITY` | `1080` | max resolution: `360` / `480` / `720` / `1080`, or a preference list like `1080,720` (prefer 1080, fall back to 720) |
 | `UDB_DOWNLOADER_TYPE` | `udb` | download engine: `udb` or `yt-dlp` |
 | `UDB_SITE_CLIENT` | `all` | `all`, or comma-separated: `kisskh,animepahe,asiaflix` |
