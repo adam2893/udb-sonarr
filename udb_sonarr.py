@@ -311,6 +311,9 @@ class UDBSonarrDaemon:
 
                 score, idx, primary = above[0]
                 self.logger.info(f'Found [{series_title}] on {client_name} -> [{primary.get("title")}] (score: {score:.2f})')
+                colprint('results',
+                         f'  MATCHED [{series_title}] on {client_name} -> [{primary.get("title")}] '
+                         f'({primary.get("country", "?")}, {primary.get("year", "?")}, score {score:.2f})')
 
                 # Detect season-split variants ("X" + "X Season 2"). Variants
                 # are scored against the PRIMARY's title (not Sonarr + year),
@@ -455,6 +458,9 @@ class UDBSonarrDaemon:
                     continue
 
                 self.logger.info(f'  Downloading S{season:02d}E{ep_num:02d} -> {client_name} ep {site_ep.get("episode")}')
+                colprint('predefined',
+                         f'  Downloading S{season:02d}E{ep_num:02d} from {client_name} '
+                         f'(ep {site_ep.get("episode")} of {matched_series.get("title")})')
 
                 try:
                     success = self.download_episode(
