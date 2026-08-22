@@ -130,6 +130,8 @@ class BaseDownloader():
 
     def _get_display_prefix(self):
         # shorten the name to show only ep number
+        display_prefix = 'Episode'
+        is_audio = False
         try:
             # set display prefix based on series type if defined
             if self.series_type.lower() == 'tv':

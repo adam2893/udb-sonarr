@@ -261,35 +261,48 @@ class UDBSonarrDaemon:
             if not client:
                 continue
 
-            self.logger.debug(f'Searching for [{series_title}] on {client_name}')
-            try:
-                search_results = client.search(series_title)
-            except Exception as e:
-                self.logger.warning(f'{client_name} search failed for [{series_title}]: {e}')
-                continue
+            # KissKh's search API is literal-ish: 'q=Us' does NOT return
+            # "Us (2025)", but 'q=Us 2025' does. If a title-only search
+            # fails to match, retry with "<title> <year>" appended.
+            queries = [series_title]
+            year = str(sonarr_series.get('year', '')).strip()
+            if year and year.isdigit():
+                queries.append(f'{series_title} {year}')
 
-            if not search_results:
-                self.logger.debug(f'No results on {client_name} for [{series_title}]')
-                continue
-
-            # Optional: fetch TMDB alternate titles to widen the match
-            # (helps when the site's title differs from Sonarr's, e.g. Thai BL)
-            extra_titles = []
-            if self.tmdb_client:
+            search_results = None
+            for query in queries:
+                self.logger.debug(f'Searching for [{query}] on {client_name}')
                 try:
-                    extra_titles = self.tmdb_client.get_series_aliases(
-                        tmdb_id=sonarr_series.get('tmdbId'),
-                        tvdb_id=sonarr_series.get('tvdbId'),
-                    )
+                    search_results = client.search(query)
                 except Exception as e:
-                    self.logger.debug(f'TMDB lookup failed for [{series_title}]: {e}')
+                    self.logger.warning(f'{client_name} search failed for [{query}]: {e}')
+                    search_results = None
+                    continue
 
-            # Try to match
-            match = self.matcher.match_series(sonarr_series, search_results, extra_titles=extra_titles)
-            if match:
-                _, matched_series = match
-                self.logger.info(f'Found [{series_title}] on {client_name} -> [{matched_series.get("title")}]')
-                return (client_name, client, matched_series)
+                if not search_results:
+                    self.logger.debug(f'No results on {client_name} for [{query}]')
+                    continue
+
+                # Optional: fetch TMDB alternate titles to widen the match
+                # (helps when the site's title differs from Sonarr's, e.g. Thai BL)
+                extra_titles = []
+                if self.tmdb_client:
+                    try:
+                        extra_titles = self.tmdb_client.get_series_aliases(
+                            tmdb_id=sonarr_series.get('tmdbId'),
+                            tvdb_id=sonarr_series.get('tvdbId'),
+                        )
+                    except Exception as e:
+                        self.logger.debug(f'TMDB lookup failed for [{series_title}]: {e}')
+
+                # Try to match
+                match = self.matcher.match_series(sonarr_series, search_results, extra_titles=extra_titles)
+                if match:
+                    _, matched_series = match
+                    self.logger.info(f'Found [{series_title}] on {client_name} -> [{matched_series.get("title")}]')
+                    return (client_name, client, matched_series)
+
+                self.logger.debug(f'No match on {client_name} for query [{query}], trying next query')
 
         return None
 
