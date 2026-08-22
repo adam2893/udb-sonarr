@@ -303,11 +303,12 @@ class UDBSonarrDaemon:
                 # Score all results; collect every above-threshold match.
                 # The best becomes the primary; the rest are "variants"
                 # (season-split entries) if they belong to the same show.
-                # Qualification uses RAW title similarity (index 3) — year/
-                # country bonuses rank but must not turn a different show
-                # into a match (e.g. "Temporary Mom" -> "Mother and Mom").
+                # Qualification is tiered: raw title alone above 0.8, or
+                # marginal (0.6-0.8) confirmed by year + country — blocks
+                # false matches like "Temporary Mom" -> "Angry Mom" (2011).
                 scored = self.matcher.score_all_results(sonarr_series, search_results, extra_titles=extra_titles)
-                above = [(score, idx, res, raw) for score, idx, res, raw in scored if raw >= self.matcher.match_threshold]
+                above = [(score, idx, res, raw) for score, idx, res, raw in scored
+                         if self.matcher.is_qualified(sonarr_series, res, raw)]
                 if not above:
                     self.logger.debug(f'No match on {client_name} for query [{query}], trying next query')
                     continue

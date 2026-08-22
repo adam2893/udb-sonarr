@@ -32,10 +32,58 @@ class SeriesMatcher:
         self.season_mappings = config.get('season_mappings', {}) if config else {}
         # Minimum similarity ratio for title matching (0.0 to 1.0)
         self.match_threshold = config.get('match_threshold', 0.6) if config else 0.6
+        # Above this raw title similarity the title alone is conclusive and
+        # year/country are not required to confirm the match.
+        self.high_conf_threshold = config.get('high_conf_threshold', 0.8) if config else 0.8
         # Whether to verify year when matching
         self.verify_year = config.get('verify_year', True) if config else True
         # Whether to verify country when matching (Sonarr countryCode vs site country)
         self.verify_country = config.get('verify_country', True) if config else True
+
+    def is_qualified(self, sonarr_series: Dict[str, Any],
+                     result: Dict[str, Any], raw_title_score: float) -> bool:
+        '''
+        Decide whether a search result is a confident-enough match to act on.
+
+        Two tiers:
+        - raw title >= high_conf_threshold (0.8): title alone is conclusive.
+        - raw title >= match_threshold but below high confidence: MARGINAL —
+          year and country must CONFIRM the match. This blocks cases like
+          "Temporary Mom" -> "Angry Mom" (raw 0.64) where a 2011 Korean
+          drama gets downloaded because the site lists a different year.
+        - below match_threshold: not a match.
+        '''
+        if raw_title_score >= self.high_conf_threshold:
+            return True
+        if raw_title_score < self.match_threshold:
+            return False
+
+        # Marginal: require year confirmation when both years are known.
+        sonarr_year = str(sonarr_series.get('year', '')).strip()
+        result_year = str(result.get('year', 'XXXX')).strip()
+        if sonarr_year and self.verify_year:
+            if result_year == 'XXXX' or result_year == '':
+                self.logger.debug(
+                    f'Marginal match [{result.get("title")}] rejected: site has no year to confirm'
+                )
+                return False
+            if sonarr_year != result_year:
+                self.logger.debug(
+                    f'Marginal match [{result.get("title")}] rejected: year {result_year} != {sonarr_year}'
+                )
+                return False
+
+        # Marginal: country must not conflict when both are known.
+        if self.verify_country:
+            sonarr_country = sonarr_series.get('countryCode') or sonarr_series.get('country') or ''
+            result_country = result.get('country') or ''
+            if sonarr_country and result_country and not self._countries_match(sonarr_country, result_country):
+                self.logger.debug(
+                    f'Marginal match [{result.get("title")}] rejected: country {result_country} conflicts'
+                )
+                return False
+
+        return True
 
     @staticmethod
     def _normalize_country(country: str) -> str:
@@ -115,9 +163,9 @@ class SeriesMatcher:
             Tuple of (kisskh_index, kisskh_result_dict) or None if no match found.
         '''
         scored = self.score_all_results(sonarr_series, kisskh_results, extra_titles)
-        # Qualification is on the RAW title similarity — year/country bonuses
-        # only rank among qualifiers and cannot turn a different show into a match.
-        if scored and scored[0][3] >= self.match_threshold:
+        # Qualification is tiered: raw title alone above high_conf_threshold,
+        # otherwise marginal matches must be confirmed by year/country.
+        if scored and self.is_qualified(sonarr_series, scored[0][2], scored[0][3]):
             _, idx, result, raw = scored[0]
             self.logger.info(f'Series matched: Sonarr [{sonarr_series.get("title")}] -> [{result.get("title")}] (raw title: {raw:.2f})')
             return (idx, result)
