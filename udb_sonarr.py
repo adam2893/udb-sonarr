@@ -577,6 +577,28 @@ class UDBSonarrDaemon:
                         break
                     self.logger.warning(f'Source {i + 1} failed for {filename}: {msg}')
 
+                # Last resort: sniff the raw m3u8 from an embed page with a
+                # headless browser (works for hosts yt-dlp has no extractor
+                # for, or blocks by policy), then download via ffmpeg.
+                if status != 0 and download_type == 'embed':
+                    self.logger.info(f'All embed sources failed — sniffing m3u8 directly for {filename}')
+                    from Utils.M3u8Sniffer import M3u8Sniffer
+                    sniffer = M3u8Sniffer(timeout=30)
+                    m3u8_url = None
+                    for link in links_to_try:
+                        m3u8_url = sniffer.sniff(link, referer=getattr(client, 'base_url', ''))
+                        if m3u8_url:
+                            break
+                    if m3u8_url:
+                        self.logger.info(f'Sniffed m3u8 for {filename}: {m3u8_url}')
+                        dl_config = dict(self.downloader_config)
+                        dl_config['download_dir'] = season_folder
+                        dl_config['_controller'] = DownloadController()
+                        dl_client_hls = HLSDownloader(dl_config, ep_details)
+                        status, msg = dl_client_hls.start_download(m3u8_url)
+                        if status != 0:
+                            self.logger.error(f'ffmpeg download of sniffed m3u8 failed: {msg}')
+
                 if status == 0:
                     dl_client.download_subtitles()
                 if status != 0:
