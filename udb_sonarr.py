@@ -291,9 +291,14 @@ class UDBSonarrDaemon:
                 # Optional: fetch TMDB alternate titles to widen the match
                 # (helps when the site's title differs from Sonarr's, e.g. Thai BL)
                 extra_titles = []
+                sonarr_synopsis = ''
                 if self.tmdb_client:
                     try:
                         extra_titles = self.tmdb_client.get_series_aliases(
+                            tmdb_id=sonarr_series.get('tmdbId'),
+                            tvdb_id=sonarr_series.get('tvdbId'),
+                        )
+                        sonarr_synopsis = self.tmdb_client.get_series_overview(
                             tmdb_id=sonarr_series.get('tmdbId'),
                             tvdb_id=sonarr_series.get('tvdbId'),
                         )
@@ -306,9 +311,12 @@ class UDBSonarrDaemon:
                 # Qualification is tiered: raw title alone above 0.8, or
                 # marginal (0.6-0.8) confirmed by year + country — blocks
                 # false matches like "Temporary Mom" -> "Angry Mom" (2011).
-                scored = self.matcher.score_all_results(sonarr_series, search_results, extra_titles=extra_titles)
+                scored = self.matcher.score_all_results(
+                    sonarr_series, search_results,
+                    extra_titles=extra_titles, sonarr_synopsis=sonarr_synopsis,
+                )
                 above = [(score, idx, res, raw) for score, idx, res, raw in scored
-                         if self.matcher.is_qualified(sonarr_series, res, raw)]
+                         if self.matcher.is_qualified(sonarr_series, res, raw, sonarr_synopsis)]
                 if not above:
                     self.logger.debug(f'No match on {client_name} for query [{query}], trying next query')
                     continue

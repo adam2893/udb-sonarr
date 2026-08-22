@@ -34,6 +34,21 @@ class SeriesMatcher:
         'arc', 'special', 'ova', 'oad', 'web',
     })
 
+    # Common English stopwords excluded from synopsis word-similarity so
+    # two different shows can't appear to match on boilerplate prose.
+    SYNOPSIS_STOPWORDS = frozenset({
+        'the', 'a', 'an', 'and', 'or', 'but', 'if', 'then', 'of', 'to', 'in',
+        'on', 'at', 'for', 'with', 'from', 'by', 'as', 'is', 'are', 'was',
+        'were', 'be', 'been', 'being', 'it', 'its', 'this', 'that', 'these',
+        'those', 'he', 'she', 'they', 'them', 'his', 'her', 'their', 'we',
+        'our', 'you', 'your', 'i', 'me', 'my', 'not', 'no', 'so', 'just',
+        'about', 'into', 'after', 'before', 'when', 'while', 'who', 'whom',
+        'which', 'what', 'will', 'would', 'can', 'could', 'should', 'may',
+        'might', 'must', 'has', 'have', 'had', 'do', 'does', 'did', 'more',
+        'most', 'very', 'all', 'any', 'one', 'two', 'also', 'because', 'but',
+        'up', 'out', 'off', 'over', 'under', 'again', 'further',
+    })
+
     def __init__(self, config: Optional[Dict] = None):
         self.logger = logging.getLogger()
         # Per-series override mapping: { sonarr_series_id: { season: kisskh_ep_offset } }
@@ -50,7 +65,8 @@ class SeriesMatcher:
         self.verify_country = config.get('verify_country', True) if config else True
 
     def is_qualified(self, sonarr_series: Dict[str, Any],
-                     result: Dict[str, Any], raw_title_score: float) -> bool:
+                     result: Dict[str, Any], raw_title_score: float,
+                     sonarr_synopsis: str = '') -> bool:
         '''
         Decide whether a search result is a confident-enough match to act on.
 
@@ -60,6 +76,9 @@ class SeriesMatcher:
           word overlap, year, and country must CONFIRM the match. This blocks
           cases like "Player: The Series" -> "ABO Desire the Series" (raw 0.67)
           where a Thai show matches a Chinese show because both share "series".
+          A strong synopsis match (>= 0.5) overrides a low word overlap, since
+          different titles ("Player: The Series" vs "Player (uncut)") can
+          describe the same show.
         - below match_threshold: not a match.
         '''
         if raw_title_score >= self.high_conf_threshold:
@@ -70,16 +89,25 @@ class SeriesMatcher:
         # Marginal: require meaningful word overlap. SequenceMatcher is
         # character-level, so titles that share only generic words ("series",
         # "the", "drama") can score above the threshold while being completely
-        # different shows. Jaccard similarity of meaningful words must be >= 0.2.
+        # different shows. Jaccard similarity of meaningful words must be >= 0.2
+        # unless the synopses strongly agree.
         sonarr_title = self._normalize_title(sonarr_series.get('title', ''))
         result_title = self._normalize_title(result.get('title', ''))
         overlap = self._word_overlap(sonarr_title, result_title)
-        if overlap < 0.2:
+        synopsis_sim = self._synopsis_similarity(
+            sonarr_synopsis, result.get('description') or ''
+        )
+        if overlap < 0.2 and synopsis_sim < 0.5:
             self.logger.debug(
                 f'Marginal match [{result.get("title")}] rejected: word overlap {overlap:.2f} < 0.2 '
                 f'(sonarr="{sonarr_title}" vs result="{result_title}")'
             )
             return False
+        if overlap < 0.2 and synopsis_sim >= 0.5:
+            self.logger.debug(
+                f'Marginal match [{result.get("title")}] accepted: synopsis similarity '
+                f'{synopsis_sim:.2f} >= 0.5 despite low word overlap {overlap:.2f}'
+            )
 
         # Marginal: require year confirmation when both years are known.
         sonarr_year = str(sonarr_series.get('year', '')).strip()
@@ -195,9 +223,33 @@ class SeriesMatcher:
         union = words_a | words_b
         return len(intersection) / len(union)
 
+    @staticmethod
+    def _synopsis_similarity(a: str, b: str) -> float:
+        '''
+        Word-level Jaccard similarity between two synopses.
+
+        Text is normalized (lowercase, punctuation removed, common stopwords
+        dropped) and the Jaccard index of the resulting word sets is computed.
+        Returns 0.0 if either synopsis is empty or yields no words.
+        '''
+        def _words(text: str):
+            text = text.lower().strip()
+            text = re.sub(r'[^\w\s]', ' ', text)
+            words = set(text.split()) - SeriesMatcher.SYNOPSIS_STOPWORDS
+            return words
+
+        words_a = _words(a)
+        words_b = _words(b)
+        if not words_a or not words_b:
+            return 0.0
+        intersection = words_a & words_b
+        union = words_a | words_b
+        return len(intersection) / len(union)
+
     def match_series(self, sonarr_series: Dict[str, Any],
                      kisskh_results: Dict[int, Dict],
-                     extra_titles: Optional[List[str]] = None) -> Optional[Tuple[int, Dict]]:
+                     extra_titles: Optional[List[str]] = None,
+                     sonarr_synopsis: str = '') -> Optional[Tuple[int, Dict]]:
         '''
         Match a Sonarr series to the best KissKh search result.
 
@@ -207,14 +259,16 @@ class SeriesMatcher:
             extra_titles: optional list of alternate titles (e.g. TMDB
                 original/alternate titles) to match against too. Useful when
                 the site's title differs from Sonarr's (localized dramas).
+            sonarr_synopsis: optional TMDB overview for the series, used as a
+                tiebreaker/booster when titles differ but synopses match.
 
         Returns:
             Tuple of (kisskh_index, kisskh_result_dict) or None if no match found.
         '''
-        scored = self.score_all_results(sonarr_series, kisskh_results, extra_titles)
+        scored = self.score_all_results(sonarr_series, kisskh_results, extra_titles, sonarr_synopsis)
         # Qualification is tiered: raw title alone above high_conf_threshold,
         # otherwise marginal matches must be confirmed by year/country.
-        if scored and self.is_qualified(sonarr_series, scored[0][2], scored[0][3]):
+        if scored and self.is_qualified(sonarr_series, scored[0][2], scored[0][3], sonarr_synopsis):
             _, idx, result, raw = scored[0]
             self.logger.info(f'Series matched: Sonarr [{sonarr_series.get("title")}] -> [{result.get("title")}] (raw title: {raw:.2f})')
             return (idx, result)
@@ -225,13 +279,19 @@ class SeriesMatcher:
 
     def score_all_results(self, sonarr_series: Dict[str, Any],
                           results: Dict[int, Dict],
-                          extra_titles: Optional[List[str]] = None) -> List[Tuple[float, int, Dict, float]]:
+                          extra_titles: Optional[List[str]] = None,
+                          sonarr_synopsis: str = '') -> List[Tuple[float, int, Dict, float]]:
         '''
         Score every search result against the Sonarr series and return them
         sorted best-first: [(final_score, result_index, result_dict, raw_title_score), ...].
 
-        final_score includes year/country bonuses (for ranking); raw_title_score
-        is the unmodified title similarity and is what QUALIFIES a match.
+        final_score includes year/country/synopsis bonuses (for ranking);
+        raw_title_score is the unmodified title similarity and is what
+        QUALIFIES a match.
+
+        sonarr_synopsis: optional TMDB overview for the series. When both the
+        series and a result carry a synopsis, strong synopsis agreement adds a
+        small bonus so shows whose titles differ can still rank first.
 
         Used by match_series (single best) and by the daemon to detect
         season-split entries (a site listing "X" and "X Season 2" as
@@ -283,9 +343,22 @@ class SeriesMatcher:
                 else:
                     title_score -= 0.4  # strong penalty for wrong country
 
+            # Synopsis bonus: when the titles are weak but the show synopses
+            # agree (e.g. "Player: The Series" vs "Player (uncut)"), add a
+            # small ranking boost. Requires BOTH synopses to be present.
+            result_description = result.get('description') or ''
+            synopsis_sim = 0.0
+            if sonarr_synopsis and result_description:
+                synopsis_sim = self._synopsis_similarity(sonarr_synopsis, result_description)
+                if synopsis_sim >= 0.5:
+                    title_score += 0.2  # strong synopsis match bonus
+                elif synopsis_sim >= 0.3:
+                    title_score += 0.1  # weak synopsis match bonus
+
             self.logger.debug(
                 f'  Result [{result.get("title")}] ({result_year}, country={result_country}): '
-                f'raw_title={raw_title_score:.2f} final={title_score:.2f}'
+                f'raw_title={raw_title_score:.2f} synopsis_sim={synopsis_sim:.2f} '
+                f'final={title_score:.2f}'
             )
             # (final_score, idx, result, raw_title_score)
             scored.append((title_score, idx, result, raw_title_score))

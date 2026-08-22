@@ -219,7 +219,8 @@ class KissKhClient(BaseClient):
                     'episodesCount': series_data['episodesCount'],
                     'series_type': series_data['type'],
                     'status': series_data['status'],
-                    'episodes': series_data['episodes']
+                    'episodes': series_data['episodes'],
+                    'description': series_data.get('description', ''),
                 }
                 try:
                     item['year'] = series_data['releaseDate'].split('-')[0]

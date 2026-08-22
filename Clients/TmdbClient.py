@@ -23,6 +23,8 @@ class TmdbClient:
         self.session = requests.Session()
         # resolved_tmdb_id -> list of alias titles
         self._alias_cache: Dict[int, List[str]] = {}
+        # resolved_tmdb_id -> English overview string
+        self._overview_cache: Dict[int, str] = {}
 
     def _get(self, path: str, params: Optional[Dict] = None):
         params = dict(params or {})
@@ -86,3 +88,22 @@ class TmdbClient:
             self.logger.info(f'TMDB: {len(aliases)} alternate title(s) for tmdb id {resolved}')
             self.logger.debug(f'TMDB aliases: {aliases}')
         return aliases
+
+    def get_series_overview(self, tmdb_id: Optional[int] = None,
+                            tvdb_id: Optional[int] = None) -> str:
+        '''Return the English overview/synopsis for a series from TMDB.'''
+        resolved = tmdb_id
+        if not resolved and tvdb_id:
+            resolved = self._find_tmdb_id(tvdb_id)
+        if not resolved:
+            return ''
+        if resolved in self._overview_cache:
+            return self._overview_cache[resolved]
+        try:
+            detail = self._get(f'/tv/{resolved}')
+            overview = detail.get('overview', '')
+        except Exception as e:
+            self.logger.warning(f'TMDB overview fetch failed for id {resolved}: {e}')
+            overview = ''
+        self._overview_cache[resolved] = overview
+        return overview
