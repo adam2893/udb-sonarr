@@ -13,6 +13,30 @@ CHROME_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
              'AppleWebKit/537.36 (KHTML, like Gecko) '
              'Chrome/108.0.0.0 Safari/537.36')
 
+# Known mirror domains of hosts yt-dlp supports natively. Mirror domains
+# serve the SAME video IDs as the canonical host, but yt-dlp's extractor
+# regex only matches the canonical domain — so without this remap the
+# mirror URL falls through to the generic extractor and 404s.
+# Keys are the raw domain (lowercase), values the canonical domain.
+MIRROR_DOMAINS = {
+    # StreamTape mirrors
+    'watchadsontape.com': 'streamtape.com',
+    'watchadblocktape.com': 'streamtape.com',
+    'adblocktape.com': 'streamtape.com',
+    'adblocktape.online': 'streamtape.com',
+    'streamtape.site': 'streamtape.com',
+    'streamtape.to': 'streamtape.com',
+    # MixDrop mirrors
+    'miiixdrop.net': 'mixdrop.co',
+    'mixdrop.ch': 'mixdrop.co',
+    'mixdrop.ag': 'mixdrop.co',
+    'mixdrop.bz': 'mixdrop.co',
+    'mixdrop.club': 'mixdrop.co',
+    'mixdrop.sx': 'mixdrop.co',
+    # VidMoly mirrors
+    'vidmoly.ws': 'vidmoly.net',
+}
+
 
 class YtDlpDownloader:
     '''Download Client for videos using yt-dlp'''
@@ -34,6 +58,19 @@ class YtDlpDownloader:
         if self.base.endswith('.mp4'):
             self.base = self.base[:-4]
 
+    def _canonicalize_url(self, url):
+        '''Rewrite known mirror domains to the canonical host domain.'''
+        try:
+            from urllib.parse import urlparse
+            parts = urlparse(url)
+            host = (parts.hostname or '').lower()
+            canonical = MIRROR_DOMAINS.get(host)
+            if canonical:
+                return url.replace(host, canonical, 1)
+        except Exception:
+            pass
+        return url
+
     def start_download(self, download_link):
         '''Download the video using yt-dlp. Returns (status, message).'''
         # lazy import so the daemon still runs without yt-dlp installed
@@ -43,6 +80,11 @@ class YtDlpDownloader:
             return (1, 'yt-dlp not installed. Install with: pip install yt-dlp')
 
         os.makedirs(self.download_dir, exist_ok=True)
+
+        # Rewrite known mirror domains (watchadsontape.com etc.) to the
+        # canonical host so yt-dlp's real extractor handles them instead of
+        # the generic one (which 404s on embed pages).
+        download_link = self._canonicalize_url(download_link)
 
         ydl_fmt = f'bestvideo[height<={self.quality}]+bestaudio/'
         ydl_fmt += f'best[height<={self.quality}]/best'
