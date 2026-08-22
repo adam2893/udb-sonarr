@@ -372,6 +372,10 @@ class UDBSonarrDaemon:
 
             # Ensure download directory exists
             os.makedirs(series_path, exist_ok=True)
+            self.logger.info(
+                f'Download target for [{series_title}]: {series_path} '
+                f'(Sonarr reports: {series.get("path", "?")})'
+            )
 
             for ep in missing_eps:
                 season = ep.get('seasonNumber', 1)
@@ -415,6 +419,29 @@ class UDBSonarrDaemon:
             ):
                 self.logger.info(f'Triggering Sonarr rescan for [{series_title}]')
                 self.sonarr.trigger_rescan(series_id)
+
+                # Verify Sonarr actually detected the downloaded files.
+                # If it reports 0 detected, the daemon's download path does not
+                # match the path Sonarr scans (common container path mismatch).
+                time.sleep(5)  # let the rescan command run
+                expected = {}
+                for ep in missing_eps:
+                    season = ep.get('seasonNumber', 1)
+                    ep_num = ep.get('episodeNumber', 1)
+                    if f'{series_id}-S{season:02d}E{ep_num:02d}' in self.completed_downloads:
+                        expected.setdefault(season, []).append(ep_num)
+                if expected:
+                    detected = self.sonarr.check_files_detected(series_id, expected)
+                    undetected = sum(
+                        len([e for e in eps if e not in detected.get(s, [])])
+                        for s, eps in expected.items()
+                    )
+                    if undetected:
+                        self.logger.error(
+                            f'SONARR PATH MISMATCH: {undetected} downloaded episode(s) for [{series_title}] '
+                            f'were NOT detected by Sonarr. Daemon wrote to {series_path} but Sonarr is not '
+                            f'scanning that path. Check container path mappings.'
+                        )
 
         # Cycle summary
         cycle_time = time.time() - cycle_start

@@ -177,6 +177,28 @@ class SonarrClient:
             self.logger.error(f'Failed to trigger rescan for series {series_id}: {e}')
             return None
 
+    def check_files_detected(self, series_id: int, expected_seasons: Dict[int, List[int]]) -> Dict[int, List[int]]:
+        '''
+        After a rescan, verify which (season, episode) pairs Sonarr now sees.
+        expected_seasons: { season: [episode_numbers...] }
+        Returns { season: [detected_episode_numbers...] }.
+        '''
+        detected = {season: [] for season in expected_seasons}
+        try:
+            episodes = self._request('GET', 'episode', params={'seriesId': series_id})
+            for ep in episodes:
+                season = ep.get('seasonNumber')
+                ep_num = ep.get('episodeNumber')
+                if season in expected_seasons and ep_num in expected_seasons[season] and ep.get('hasFile'):
+                    detected[season].append(ep_num)
+            self.logger.info(
+                f'Sonarr: verified {sum(len(v) for v in detected.values())}/{sum(len(v) for v in expected_seasons.values())} '
+                f'downloaded episodes now have files for series {series_id}'
+            )
+        except Exception as e:
+            self.logger.error(f'Failed to verify files detected for series {series_id}: {e}')
+        return detected
+
     def trigger_refresh_series(self, series_id: int) -> Optional[Dict]:
         '''
         Trigger a RefreshSeries command in Sonarr.
