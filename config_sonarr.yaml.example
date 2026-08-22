@@ -134,6 +134,9 @@ Anime (Animepahe):
 # (requires downloader_type: yt-dlp, or embed links auto-route there).
 Asian Dramas & Movies (Asiaflix):
   base_url: https://asiaflix.net/
+  # Known mirrors, tried in order if base_url is unreachable
+  asiaflix_domains: ['asiaflix.net', 'asiaflix.in']
+
   search_url: search?q=
   drama_url: drama/
 

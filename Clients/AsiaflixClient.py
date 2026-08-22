@@ -13,9 +13,12 @@ class AsiaflixClient(BaseClient):
     '''
     # step-0
     def __init__(self, config, session=None):
-        self.base_url = config.get('base_url', 'https://asiaflix.net/')
-        if not self.base_url.endswith('/'):
-            self.base_url += '/'
+        # Known mirrors, tried in order if the configured domain is down
+        self.mirror_domains = config.get('asiaflix_domains') or [
+            'asiaflix.net', 'asiaflix.in'
+        ]
+        configured = config.get('base_url', 'https://asiaflix.net/')
+        self.base_url = self._first_alive(configured)
         self.search_url = self.base_url + config.get('search_url', 'search?q=')
         self.drama_url = self.base_url + config.get('drama_url', 'drama/')
         # embed hosts ordered by preference. yt-dlp has native extractors
@@ -29,6 +32,31 @@ class AsiaflixClient(BaseClient):
         )
         super().__init__(config.get('request_timeout', 30), session)
         self.logger.debug(f'Asiaflix client initialized with {config = }')
+
+    def _first_alive(self, configured):
+        '''
+        Pick the first reachable Asiaflix domain: the configured base first,
+        then each known mirror. Falls back to the configured value if all
+        checks fail (requests will just fail naturally afterwards).
+        '''
+        import requests as _requests
+        from urllib.parse import urlparse
+        configured_host = urlparse(configured).netloc.lower()
+        candidates = [configured.rstrip('/') + '/']
+        for domain in self.mirror_domains:
+            if domain.lower() != configured_host:
+                candidates.append(f'https://{domain}/')
+
+        for base in candidates:
+            try:
+                r = _requests.get(base, timeout=8,
+                                  headers={'User-Agent': 'Mozilla/5.0'})
+                if r.status_code < 500:
+                    return base
+            except Exception:
+                continue
+        self.logger.warning(f'No reachable Asiaflix domain found among {candidates}')
+        return candidates[0]
 
     # step-1
     def search(self, keyword):
