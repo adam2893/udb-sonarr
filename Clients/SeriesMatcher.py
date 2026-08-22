@@ -25,6 +25,15 @@ class SeriesMatcher:
         'AU': 'australia', 'CA': 'canada', 'DE': 'germany', 'FR': 'france',
     }
 
+    # Generic words that appear in many titles but don't distinguish shows.
+    # Excluded from the word-overlap check so "Player" vs "ABO Desire" can't
+    # match just because both contain "series".
+    COMMON_WORDS = frozenset({
+        'the', 'a', 'an', 'series', 'show', 'drama', 'part', 'season',
+        'movie', 'film', 'episode', 'ep', 'vol', 'volume', 'chapter',
+        'arc', 'special', 'ova', 'oad', 'web',
+    })
+
     def __init__(self, config: Optional[Dict] = None):
         self.logger = logging.getLogger()
         # Per-series override mapping: { sonarr_series_id: { season: kisskh_ep_offset } }
@@ -48,14 +57,28 @@ class SeriesMatcher:
         Two tiers:
         - raw title >= high_conf_threshold (0.8): title alone is conclusive.
         - raw title >= match_threshold but below high confidence: MARGINAL —
-          year and country must CONFIRM the match. This blocks cases like
-          "Temporary Mom" -> "Angry Mom" (raw 0.64) where a 2011 Korean
-          drama gets downloaded because the site lists a different year.
+          word overlap, year, and country must CONFIRM the match. This blocks
+          cases like "Player: The Series" -> "ABO Desire the Series" (raw 0.67)
+          where a Thai show matches a Chinese show because both share "series".
         - below match_threshold: not a match.
         '''
         if raw_title_score >= self.high_conf_threshold:
             return True
         if raw_title_score < self.match_threshold:
+            return False
+
+        # Marginal: require meaningful word overlap. SequenceMatcher is
+        # character-level, so titles that share only generic words ("series",
+        # "the", "drama") can score above the threshold while being completely
+        # different shows. Jaccard similarity of meaningful words must be >= 0.2.
+        sonarr_title = self._normalize_title(sonarr_series.get('title', ''))
+        result_title = self._normalize_title(result.get('title', ''))
+        overlap = self._word_overlap(sonarr_title, result_title)
+        if overlap < 0.2:
+            self.logger.debug(
+                f'Marginal match [{result.get("title")}] rejected: word overlap {overlap:.2f} < 0.2 '
+                f'(sonarr="{sonarr_title}" vs result="{result_title}")'
+            )
             return False
 
         # Marginal: require year confirmation when both years are known.
@@ -73,15 +96,24 @@ class SeriesMatcher:
                 )
                 return False
 
-        # Marginal: country must not conflict when both are known.
+        # Marginal: country must not conflict. If Sonarr has a country but the
+        # site doesn't report one, reject — an unknown country can't confirm
+        # the match (e.g. Thai show matching a Chinese show because KissKh
+        # didn't return a country).
         if self.verify_country:
             sonarr_country = sonarr_series.get('countryCode') or sonarr_series.get('country') or ''
             result_country = result.get('country') or ''
-            if sonarr_country and result_country and not self._countries_match(sonarr_country, result_country):
-                self.logger.debug(
-                    f'Marginal match [{result.get("title")}] rejected: country {result_country} conflicts'
-                )
-                return False
+            if sonarr_country:
+                if not result_country:
+                    self.logger.debug(
+                        f'Marginal match [{result.get("title")}] rejected: site has no country to confirm'
+                    )
+                    return False
+                if not self._countries_match(sonarr_country, result_country):
+                    self.logger.debug(
+                        f'Marginal match [{result.get("title")}] rejected: country {result_country} conflicts with {sonarr_country}'
+                    )
+                    return False
 
         return True
 
@@ -145,6 +177,23 @@ class SeriesMatcher:
     def _similarity(a: str, b: str) -> float:
         '''Calculate string similarity ratio between two normalized titles.'''
         return SequenceMatcher(None, a, b).ratio()
+
+    @staticmethod
+    def _word_overlap(a: str, b: str) -> float:
+        '''
+        Jaccard similarity of meaningful words in two normalized titles.
+        Generic words (series, the, drama, etc.) are excluded so titles
+        that share only common suffixes don't appear to match.
+
+        Returns 0.0 if either title has no meaningful words after filtering.
+        '''
+        words_a = set(a.split()) - SeriesMatcher.COMMON_WORDS
+        words_b = set(b.split()) - SeriesMatcher.COMMON_WORDS
+        if not words_a or not words_b:
+            return 0.0
+        intersection = words_a & words_b
+        union = words_a | words_b
+        return len(intersection) / len(union)
 
     def match_series(self, sonarr_series: Dict[str, Any],
                      kisskh_results: Dict[int, Dict],
