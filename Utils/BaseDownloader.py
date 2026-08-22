@@ -2,6 +2,7 @@ __author__ = 'Prudhvi PLN'
 
 import logging
 import os
+import re
 import requests
 import sys
 import http.client
@@ -135,6 +136,12 @@ class BaseDownloader():
         try:
             # set display prefix based on series type if defined
             if self.series_type.lower() == 'tv':
+                # Sonarr-compatible filenames: "Show - S01E01 - Title.mp4".
+                # Extract SxxEyy directly instead of UDB's brittle split(),
+                # which fails on "(2025)" in titles and falls into Movie.
+                m = re.search(r'S(\d+)E(\d+)', self.out_file)
+                if m:
+                    return f'S{int(m.group(1)):02d}E{int(m.group(2)):02d}'
                 ss_no = self.out_dir.split('-')[-1]
                 ep_no = self.out_file.split()[1]
                 return f'S{int(ss_no):02d}E{int(ep_no):02d}'
