@@ -484,12 +484,17 @@ class UDBSonarrDaemon:
                 for ep in missing_eps
             ):
                 self.logger.info(f'Triggering Sonarr rescan for [{series_title}]')
-                self.sonarr.trigger_rescan(series_id)
+                rescan_cmd = self.sonarr.trigger_rescan(series_id)
 
-                # Verify Sonarr actually detected the downloaded files.
-                # If it reports 0 detected, the daemon's download path does not
-                # match the path Sonarr scans (common container path mismatch).
-                time.sleep(5)  # let the rescan command run
+                # Wait for the rescan command to actually COMPLETE before
+                # verifying — RescanSeries is async, and a fixed sleep can
+                # check hasFile before the scan/import finishes, producing
+                # false "PATH MISMATCH" errors.
+                if rescan_cmd and rescan_cmd.get('id'):
+                    self.sonarr.wait_for_command(rescan_cmd['id'], timeout=120)
+                else:
+                    time.sleep(5)
+
                 expected = {}
                 for ep in missing_eps:
                     season = ep.get('seasonNumber', 1)

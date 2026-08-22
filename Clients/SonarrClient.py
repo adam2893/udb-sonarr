@@ -165,6 +165,7 @@ class SonarrClient:
         '''
         Trigger a RescanSeries command in Sonarr.
         This makes Sonarr scan the series folder for new files and import them.
+        Returns the command dict (with its id) or None.
         '''
         try:
             result = self._request('POST', 'command', json_body={
@@ -176,6 +177,28 @@ class SonarrClient:
         except Exception as e:
             self.logger.error(f'Failed to trigger rescan for series {series_id}: {e}')
             return None
+
+    def wait_for_command(self, command_id, timeout: int = 120, poll_interval: float = 3.0) -> bool:
+        '''
+        Poll a Sonarr command until it completes or times out.
+        Returns True if the command reached a terminal state (completed,
+        completedWithErrors, aborted, failed), False on timeout.
+        '''
+        import time
+        deadline = time.time() + timeout
+        terminal = {'completed', 'completedWithErrors', 'aborted', 'failed'}
+        while time.time() < deadline:
+            try:
+                cmd = self._request('GET', f'command/{command_id}')
+                status = (cmd or {}).get('status', '')
+                if status in terminal:
+                    self.logger.info(f'Sonarr: rescan command {command_id} finished with status: {status}')
+                    return True
+            except Exception as e:
+                self.logger.debug(f'Sonarr: command poll error (will retry): {e}')
+            time.sleep(poll_interval)
+        self.logger.warning(f'Sonarr: timed out waiting for command {command_id} ({timeout}s)')
+        return False
 
     def check_files_detected(self, series_id: int, expected_seasons: Dict[int, List[int]]) -> Dict[int, List[int]]:
         '''
