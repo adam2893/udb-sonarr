@@ -25,7 +25,7 @@ class KissKhClient(BaseClient):
         self.blacklist_urls = config['blacklist_urls'] if config.get('blacklist_urls') else []
         self.selector_strategy = config.get('alternate_resolution_selector', 'lowest')
         self.hls_size_accuracy = config.get('hls_size_accuracy', 0)
-        self.search_limit = config.get('search_limit', 5)
+        self.search_limit = config.get('search_limit', 20)
         super().__init__(config.get('request_timeout', 30), session)
         self.logger.debug(f'KissKh Drama client initialized with {config = }')
         self.token_generation_js_code = None

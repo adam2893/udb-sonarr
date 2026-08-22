@@ -148,8 +148,11 @@ Asian Dramas & Movies (Asiaflix):
   # mixdrop, and vidmoly natively. Others are tried only as fallback.
   source_priority: ['streamtape', 'mixdrop', 'vidmoly', 'vidbasic', 'asianctv']
 
-  # Max search results to consider
-  search_limit: 10
+  # Max search results per category to consider.
+  # Must be high enough that the correct show isn't truncated out of the
+  # results — some shows rank 6th+ in KissKh's literal search (e.g. 'Us'
+  # returns 'Us (2025)' only at position 6+ with the year appended).
+  search_limit: 20
 
   alternate_resolution_selector: 'highest'
 
