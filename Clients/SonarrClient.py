@@ -278,12 +278,22 @@ class SonarrClient:
         title + year — Sonarr titles often already contain the year in
         parentheses ("Us (2025)"), and rebuilding "Us (2025) (2025)" produced
         a folder Sonarr never scans.
+
+        If Sonarr's series.path is already under root_folder, use it as-is
+        (preserves subfolders like "kids/ClaireBell"). Otherwise remap the
+        folder name to root_folder.
         '''
         if self.root_folder:
-            # Prefer Sonarr's actual folder name so it matches exactly
             sonarr_path = series.get('path', '')
             if sonarr_path:
-                folder_name = sonarr_path.rstrip('/').split('/')[-1]
+                # If Sonarr's path is already under our root_folder, use it
+                # as-is — this preserves subfolders (e.g. /data/media/kids/ClaireBell
+                # stays under /data/media/kids/ when root_folder is /data/media).
+                sonarr_path = sonarr_path.rstrip('/')
+                if sonarr_path.startswith(self.root_folder.rstrip('/') + '/'):
+                    return sonarr_path
+                # Otherwise remap: take just the folder name and join to root_folder
+                folder_name = sonarr_path.split('/')[-1]
             else:
                 # Fallback: build from title (+ year only if title lacks it)
                 title = series.get('title', 'Unknown')
