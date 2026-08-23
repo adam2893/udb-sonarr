@@ -205,11 +205,18 @@ class SeriesMatcher:
         - lowercase
         - remove punctuation
         - remove common suffixes/prefixes
+        - strip KissKh modifiers (uncut, ver, la forte, alt titles after -)
         - collapse whitespace
         '''
         title = title.lower().strip()
+        # Remove alternative titles after " - " (e.g. "We Are The Series - We Are Khue Rao Rak Kan")
+        title = re.sub(r'\s+-\s+.*$', '', title)
         # Remove common variations
         title = re.sub(r'\b(the|a|an)\b', '', title)
+        # Remove KissKh version modifiers: uncut, ver, uncut ver, la forte
+        title = re.sub(r'\b(uncut|ver|la forte|book \d+)\b', '', title)
+        # Remove season markers like "season 1", "season 2" (KissKh adds these)
+        title = re.sub(r'\bseason\s+\d+\b', '', title)
         # Remove punctuation and special chars
         title = re.sub(r'[^\w\s]', ' ', title)
         # Remove trailing year in parentheses
