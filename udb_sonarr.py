@@ -451,6 +451,50 @@ class UDBSonarrDaemon:
 
             client_name, client, matched_series, variant_series = found
 
+            # If S02+ episodes are missing but no variants were found, search
+            # for season-specific entries that weren't in the original results.
+            # KissKh lists seasons as separate shows with different titles.
+            missing_seasons_gt1 = set(
+                ep.get('seasonNumber', 1) for ep in missing_eps
+                if ep.get('seasonNumber', 1) > 1
+            )
+            if missing_seasons_gt1 and not variant_series:
+                self.logger.info(
+                    f'No variants found for [{series_title}] but S02+ episodes '
+                    f'are missing — searching for season-specific entries'
+                )
+                sonarr_country = series.get('countryCode') or series.get('country') or ''
+                for season in sorted(missing_seasons_gt1):
+                    season_query = f'{series_title} Season {season}'
+                    self.logger.debug(f'Searching for season variant: [{season_query}]')
+                    try:
+                        season_results = client.search(season_query)
+                    except Exception as e:
+                        self.logger.debug(f'Search for [{season_query}] failed: {e}')
+                        continue
+                    if not season_results:
+                        continue
+                    # Post-filter by country (same as main search)
+                    if sonarr_country:
+                        filtered = {}
+                        for idx, res in season_results.items():
+                            res_country = res.get('country') or ''
+                            if res_country and not SeriesMatcher._countries_match(sonarr_country, res_country):
+                                continue
+                            filtered[idx] = res
+                        season_results = filtered
+                    # Score and find the best match
+                    scored = self.matcher.score_all_results(series, season_results)
+                    above = [(s, i, r, raw) for s, i, r, raw in scored
+                             if self.matcher.is_qualified(series, r, raw)]
+                    if above:
+                        _, _, season_match, _ = above[0]
+                        self.logger.info(
+                            f'  Found season {season} variant: [{season_match.get("title")}] '
+                            f'({season_match.get("country", "?")}, {season_match.get("year", "?")})'
+                        )
+                        variant_series.append(season_match)
+
             # Fetch episode list from site
             try:
                 site_episodes = client.fetch_episodes_list(matched_series)
