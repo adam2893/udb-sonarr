@@ -480,17 +480,21 @@ class SeriesMatcher:
             self.logger.warning(f'Episode {ep_num} not found in KissKh episode list (single-season direct map)')
             return None
 
-        # Multi-season heuristic: try to find the episode by absolute number
-        absolute_ep = ep_num
+        # Multi-season: check variant entries (season splits) FIRST.
+        # If a variant's title carries a season marker matching the Sonarr
+        # season (e.g. "(Your) Apple Season 2"), use that variant's episodes
+        # directly — NOT the primary's episodes, which belong to season 1.
+        matched = self._map_from_variants(season, ep_num, variant_episodes)
+        if matched:
+            return matched
+
+        # No variant matched this season — fall back to the primary's
+        # episode list (flat numbering: S02E01 might be ep 13 if S01
+        # had 12 episodes).
         for ep in kisskh_episodes:
             if float(ep.get('episode', 0)) == float(ep_num):
                 self.logger.debug(f'Multi-season: direct match S{season}E{ep_num} -> KissKh ep {ep_num}')
                 return ep
-
-        # Fall back to season-split variant entries (Asiaflix-style splits)
-        matched = self._map_from_variants(season, ep_num, variant_episodes)
-        if matched:
-            return matched
 
         self.logger.warning(
             f'Could not map S{season}E{ep_num} to KissKh episode. '
