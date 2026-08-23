@@ -367,18 +367,22 @@ class UDBSonarrDaemon:
                          f'({primary.get("country", "?")}, {primary.get("year", "?")}, raw title {raw:.2f})')
 
                 # Detect season-split variants ("X" + "X Season 2"). Variants
-                # are scored against the PRIMARY's title (not Sonarr + year),
-                # because a "Season 2" entry often has a different year and
-                # would otherwise fall below the strict match threshold.
+                # are scored against BOTH the primary's title and the Sonarr
+                # title — a "Season 2" entry may share words with the Sonarr
+                # title but not with the primary's full title (e.g. Sonarr
+                # "Apple" vs primary "Apple My Love" vs variant "(Your) Apple
+                # Season 2" — the variant matches Sonarr but not the primary).
                 variants = []
+                sonarr_norm = self.matcher._normalize_title(series_title)
                 for v_score, v_idx, v_res, v_raw in scored:
                     if (v_idx, v_res) == (idx, primary):
                         continue
-                    v_sim = self.matcher._similarity(
-                        self.matcher._normalize_title(primary.get('title', '')),
-                        self.matcher._normalize_title(v_res.get('title', ''))
+                    v_norm = self.matcher._normalize_title(v_res.get('title', ''))
+                    v_sim_primary = self.matcher._similarity(
+                        self.matcher._normalize_title(primary.get('title', '')), v_norm
                     )
-                    if v_sim >= self.matcher.match_threshold:
+                    v_sim_sonarr = self.matcher._similarity(sonarr_norm, v_norm)
+                    if v_sim_primary >= self.matcher.match_threshold or v_sim_sonarr >= self.matcher.match_threshold:
                         variants.append(v_res)
 
                 if variants:
