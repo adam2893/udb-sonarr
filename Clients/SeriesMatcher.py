@@ -71,7 +71,11 @@ class SeriesMatcher:
         Decide whether a search result is a confident-enough match to act on.
 
         Two tiers:
-        - raw title >= high_conf_threshold (0.8): title alone is conclusive.
+        - raw title >= high_conf_threshold (0.8): title alone is conclusive
+          UNLESS the titles share words but neither is a subset of the other
+          (e.g. "Show Me The Money" vs "Show Me Love" — share "Show Me" but
+          differ in the key word). In that case require containment, high
+          synopsis similarity, or high word overlap.
         - raw title >= match_threshold but below high confidence: MARGINAL —
           word overlap, year, and country must CONFIRM the match. This blocks
           cases like "Player: The Series" -> "ABO Desire the Series" (raw 0.67)
@@ -81,7 +85,26 @@ class SeriesMatcher:
           describe the same show.
         - below match_threshold: not a match.
         '''
+        sonarr_title = self._normalize_title(sonarr_series.get('title', ''))
+        result_title = self._normalize_title(result.get('title', ''))
+        overlap = self._word_overlap(sonarr_title, result_title)
+        containment = self._word_containment(sonarr_title, result_title)
+        synopsis_sim = self._synopsis_similarity(
+            sonarr_synopsis, result.get('description') or ''
+        )
+
         if raw_title_score >= self.high_conf_threshold:
+            # High character-level similarity, but titles that share a common
+            # phrase but differ in the key word (e.g. "Show Me The Money" vs
+            # "Show Me Love") are different shows. Require containment, high
+            # synopsis similarity, or high word overlap to confirm.
+            if not containment and synopsis_sim < 0.5 and overlap < 0.5:
+                self.logger.debug(
+                    f'High-conf match [{result.get("title")}] rejected: titles share words '
+                    f'but neither is a subset (overlap={overlap:.2f}, synopsis={synopsis_sim:.2f}) '
+                    f'(sonarr="{sonarr_title}" vs result="{result_title}")'
+                )
+                return False
             return True
         if raw_title_score < self.match_threshold:
             return False
@@ -91,12 +114,6 @@ class SeriesMatcher:
         # "the", "drama") can score above the threshold while being completely
         # different shows. Jaccard similarity of meaningful words must be >= 0.2
         # unless the synopses strongly agree.
-        sonarr_title = self._normalize_title(sonarr_series.get('title', ''))
-        result_title = self._normalize_title(result.get('title', ''))
-        overlap = self._word_overlap(sonarr_title, result_title)
-        synopsis_sim = self._synopsis_similarity(
-            sonarr_synopsis, result.get('description') or ''
-        )
         if overlap < 0.2 and synopsis_sim < 0.5:
             self.logger.debug(
                 f'Marginal match [{result.get("title")}] rejected: word overlap {overlap:.2f} < 0.2 '
@@ -222,6 +239,20 @@ class SeriesMatcher:
         intersection = words_a & words_b
         union = words_a | words_b
         return len(intersection) / len(union)
+
+    @staticmethod
+    def _word_containment(a: str, b: str) -> bool:
+        '''
+        True if one title's meaningful words are a subset of the other's.
+        This catches cases like "Player" vs "Player (uncut)" where one
+        title is the other plus a modifier (uncut, season 2, part 1, etc.).
+        Returns False if either title has no meaningful words.
+        '''
+        words_a = set(a.split()) - SeriesMatcher.COMMON_WORDS
+        words_b = set(b.split()) - SeriesMatcher.COMMON_WORDS
+        if not words_a or not words_b:
+            return False
+        return words_a <= words_b or words_b <= words_a
 
     @staticmethod
     def _synopsis_similarity(a: str, b: str) -> float:
