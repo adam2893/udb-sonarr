@@ -374,14 +374,24 @@ class UDBSonarrDaemon:
                 # Season 2" — the variant matches Sonarr but not the primary).
                 variants = []
                 sonarr_norm = self.matcher._normalize_title(series_title)
+                primary_norm = self.matcher._normalize_title(primary.get('title', ''))
+                self.logger.info(
+                    f'  Variant detection: sonarr_norm="{sonarr_norm}", '
+                    f'primary_norm="{primary_norm}", '
+                    f'scored_count={len(scored)}, match_threshold={self.matcher.match_threshold}'
+                )
                 for v_score, v_idx, v_res, v_raw in scored:
                     if (v_idx, v_res) == (idx, primary):
                         continue
                     v_norm = self.matcher._normalize_title(v_res.get('title', ''))
-                    v_sim_primary = self.matcher._similarity(
-                        self.matcher._normalize_title(primary.get('title', '')), v_norm
-                    )
+                    v_sim_primary = self.matcher._similarity(primary_norm, v_norm)
                     v_sim_sonarr = self.matcher._similarity(sonarr_norm, v_norm)
+                    self.logger.info(
+                        f'  Variant check: [{v_res.get("title")}] -> '
+                        f'v_norm="{v_norm}", vs_primary={v_sim_primary:.2f}, '
+                        f'vs_sonarr={v_sim_sonarr:.2f}, '
+                        f'pass={v_sim_primary >= self.matcher.match_threshold or v_sim_sonarr >= self.matcher.match_threshold}'
+                    )
                     if v_sim_primary >= self.matcher.match_threshold or v_sim_sonarr >= self.matcher.match_threshold:
                         variants.append(v_res)
 
