@@ -23,6 +23,12 @@ import time
 import traceback
 from datetime import datetime
 from typing import Dict, List, Optional, Any
+import os
+
+# Set permissive umask so created dirs (0775) and files (0664) are
+# group-writable — Sonarr (which may run as a different user) can then
+# edit/move/delete files the daemon creates.
+os.umask(0o002)
 
 # UDB internals
 from Utils.commons import (
@@ -79,6 +85,13 @@ class UDBSonarrDaemon:
                 sonarr_config[cfg_key] = os.environ[env_key]
 
         self.poll_interval = int(sonarr_config.get('poll_interval_minutes', 30)) * 60
+
+        # File ownership: chown created dirs/files to this UID/GID so Sonarr
+        # (which may run as a different user, e.g. 'nobody' on Unraid) can
+        # edit/move/delete them. Defaults to nobody:users (99:100) — the
+        # standard Unraid user. Override with PUID/PGID env vars.
+        self.puid = int(os.environ.get('PUID', 99))
+        self.pgid = int(os.environ.get('PGID', 100))
 
         # Only process series that carry at least one of these Sonarr tags.
         # Empty list = no filtering. Accepts YAML list or comma-separated env
@@ -470,6 +483,11 @@ class UDBSonarrDaemon:
 
             # Ensure download directory exists
             os.makedirs(series_path, exist_ok=True)
+            os.chmod(series_path, 0o775)
+            try:
+                os.chown(series_path, self.puid, self.pgid)
+            except (PermissionError, OSError) as e:
+                self.logger.debug(f'Could not chown {series_path}: {e}')
             self.logger.info(
                 f'Download target for [{series_title}]: {series_path} '
                 f'(Sonarr reports: {series.get("path", "?")})'
@@ -657,6 +675,11 @@ class UDBSonarrDaemon:
             season = sonarr_ep.get('seasonNumber', 1)
             season_folder = os.path.join(series_path, f'Season {season:02d}')
             os.makedirs(season_folder, exist_ok=True)
+            os.chmod(season_folder, 0o775)
+            try:
+                os.chown(season_folder, self.puid, self.pgid)
+            except (PermissionError, OSError) as e:
+                self.logger.debug(f'Could not chown {season_folder}: {e}')
             output_path = os.path.join(season_folder, filename)
 
             # Skip if file already exists
@@ -767,6 +790,15 @@ class UDBSonarrDaemon:
                 return False
 
             self.logger.info(f'Download completed: {filename}')
+
+            # Fix ownership/permissions so Sonarr (running as a different user,
+            # e.g. 'nobody' on Unraid) can edit/move/delete the file.
+            try:
+                os.chmod(output_path, 0o664)
+                os.chown(output_path, self.puid, self.pgid)
+            except (PermissionError, OSError) as e:
+                self.logger.debug(f'Could not chown/chmod {output_path}: {e}')
+
             return True
 
         except Exception as e:
