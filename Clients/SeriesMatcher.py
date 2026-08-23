@@ -98,7 +98,7 @@ class SeriesMatcher:
             # phrase but differ in the key word (e.g. "Show Me The Money" vs
             # "Show Me Love") are different shows. Require containment, high
             # synopsis similarity, or high word overlap to confirm.
-            if not containment and synopsis_sim < 0.5 and overlap < 0.5:
+            if not containment and synopsis_sim < 0.5 and overlap <= 0.5:
                 self.logger.debug(
                     f'High-conf match [{result.get("title")}] rejected: titles share words '
                     f'but neither is a subset (overlap={overlap:.2f}, synopsis={synopsis_sim:.2f}) '
@@ -227,8 +227,24 @@ class SeriesMatcher:
 
     @staticmethod
     def _similarity(a: str, b: str) -> float:
-        '''Calculate string similarity ratio between two normalized titles.'''
-        return SequenceMatcher(None, a, b).ratio()
+        '''Calculate similarity ratio between two normalized titles.
+
+        Uses SequenceMatcher as the base, with a boost for word-level
+        containment: if one title's meaningful words are a subset of the
+        other's, the base score is too low for short titles.
+
+        Example: "fire" vs "fire 4 elements" → base 0.42, but "fire" is
+        a subset of {"fire", "4", "elements"}, so boost to 0.85.
+        "gap 2022" vs "gap series" → base 0.44, but {"gap"} is a subset
+        of {"gap", "2022"}, so boost to 0.85.
+        '''
+        base = SequenceMatcher(None, a, b).ratio()
+        words_a = set(a.split()) - SeriesMatcher.COMMON_WORDS
+        words_b = set(b.split()) - SeriesMatcher.COMMON_WORDS
+        if words_a and words_b:
+            if words_a <= words_b or words_b <= words_a:
+                base = max(base, 0.85)
+        return base
 
     @staticmethod
     def _word_overlap(a: str, b: str) -> float:
