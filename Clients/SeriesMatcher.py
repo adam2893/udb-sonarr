@@ -203,12 +203,16 @@ class SeriesMatcher:
         '''
         Normalize a title for comparison:
         - lowercase
-        - remove punctuation
+        - remove year in parentheses (before punctuation removal)
         - remove common suffixes/prefixes
         - strip KissKh modifiers (uncut, ver, la forte, alt titles after -)
         - collapse whitespace
         '''
         title = title.lower().strip()
+        # Remove year in parentheses FIRST (e.g. "(2024)") — must run
+        # before punctuation removal strips the parens and leaves the
+        # bare year stuck in the title.
+        title = re.sub(r'\(\d{4}\)', '', title)
         # Remove alternative titles after " - " (e.g. "We Are The Series - We Are Khue Rao Rak Kan")
         title = re.sub(r'\s+-\s+.*$', '', title)
         # Remove common variations
@@ -219,8 +223,8 @@ class SeriesMatcher:
         title = re.sub(r'\bseason\s+\d+\b', '', title)
         # Remove punctuation and special chars
         title = re.sub(r'[^\w\s]', ' ', title)
-        # Remove trailing year in parentheses
-        title = re.sub(r'\(\d{4}\)', '', title)
+        # Remove standalone years (4 digits) left after parens removal
+        title = re.sub(r'\b\d{4}\b', '', title)
         # Collapse whitespace
         title = re.sub(r'\s+', ' ', title).strip()
         return title
