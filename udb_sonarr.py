@@ -274,6 +274,7 @@ class UDBSonarrDaemon:
         sites that keep one series (KissKh). Tries clients in order; returns
         first client with a match.
         '''
+        matches = []
         for client_name in self.site_client_names:
             client = self.site_clients.get(client_name)
             if not client:
@@ -372,12 +373,6 @@ class UDBSonarrDaemon:
                 # title but not with the primary's full title (e.g. Sonarr
                 # "Apple" vs primary "Apple My Love" vs variant "(Your) Apple
                 # Season 2" — the variant matches Sonarr but not the primary).
-                # Detect season-split variants ("X" + "X Season 2"). Variants
-                # are scored against BOTH the primary's title and the Sonarr
-                # title — a "Season 2" entry may share words with the Sonarr
-                # title but not with the primary's full title (e.g. Sonarr
-                # "Apple" vs primary "Apple My Love" vs variant "(Your) Apple
-                # Season 2" — the variant matches Sonarr but not the primary).
                 variants = []
                 sonarr_norm = self.matcher._normalize_title(series_title)
                 primary_norm = self.matcher._normalize_title(primary.get('title', ''))
@@ -428,9 +423,159 @@ class UDBSonarrDaemon:
                         f'  {len(variants)} additional match(es) on {client_name}: '
                         f'{[v.get("title") for v in variants]} (treating as season variants)'
                     )
-                return (client_name, client, primary, variants)
+                matches.append((client_name, client, primary, variants))
 
-        return None
+        if not matches:
+            return None
+
+        # Choose client: prefer KissKh if available (user requests it), even
+        # though its episodes are split into parts (8.1, 8.2, 8.3, 8.4). The
+        # split parts will be merged via ffmpeg before import.
+        chosen = None
+        for client_name, client, primary, variants in matches:
+            if client_name == 'kisskh':
+                chosen = (client_name, client, primary, variants)
+                break
+        if chosen is None and matches:
+            chosen = matches[0]
+        if chosen is None:
+            return None
+
+        client_name, client, primary, variants = chosen
+        # Fetch episodes list (will be split for KissKh)
+        try:
+            episodes = client.fetch_episodes_list(primary)
+        except Exception as e:
+            self.logger.error(f'Failed to fetch episode list for [{series_title}] from {client_name}: {e}')
+            return (client_name, client, primary, variants, None)
+
+        if self._is_split_episodes(episodes):
+            self.logger.info(
+                f'KissKh split episodes detected for [{series_title}]; '
+                f'will merge 4 parts (8.1-8.4) via ffmpeg before import'
+            )
+        return (client_name, client, primary, variants, episodes)
+
+    @staticmethod
+    def _merge_kisskh_episodes(series, split_episodes, series_path):
+        '''Merge KissKh's 4 split episode parts (8.1-8.4) into one file
+        named per Sonarr convention (Show.S01E08.mkv).
+
+        Returns the merged episode dict or None on failure.
+        '''
+        import subprocess
+        import os
+
+        series_title = series.get('title', '')
+        season_num = series.get('seasonNumber', 1)
+        # Get the first episode number to determine episode number
+        # split_episodes is a list of episode dicts; pick one to get the ep number
+        if not split_episodes:
+            return None
+        first_ep = split_episodes[0]
+        ep_no = first_ep.get('episode')
+        try:
+            ep_num = int(ep_no) if str(ep_no).endswith('.0') else ep_no
+        except (ValueError, TypeError):
+            ep_num = 1
+
+        # Find the 4 parts. KissKh episode numbers are like "8.1", "8.2", "8.3", "8.4"
+        parts = {}
+        for ep in split_episodes:
+            ep_no = ep.get('episode', '')
+            # Extract part number: "8.1" -> 1
+            try:
+                part = int(ep_no.split('.')[-1])
+            except (ValueError, AttributeError):
+                part = 1
+            parts[part] = ep
+
+        # We need parts 1, 2, 3, 4
+        required = [1, 2, 3, 4]
+        if not all(p in parts for p in required):
+            self.logger.warning(f'Missing KissKh split parts for [{series_title}]; '
+                                f'found: {list(parts.keys())}, needed: {required}')
+            return None
+
+        # Build input file list for ffmpeg concat
+        # Sort parts by part number
+        sorted_parts = sorted(parts.items(), key=lambda x: x[0])
+        input_files = []
+        for part_num, ep_dict in sorted_parts:
+            # The downloaded file path - we need to know where yt-dlp saved it.
+            # yt-dlp typically saves to the current working directory or the
+            # output template. We'll construct the expected path based on the
+            # episode info.
+            filename = ep_dict.get('filename', f'{series_title}.S{season_num:02d}E{ep_num:02d}.part{part_num}')
+            # Try to find the file in the series_path or current dir
+            filepath = os.path.join(series_path, filename) if series_path else filename
+            if not os.path.exists(filepath):
+                # Try without the series_path prefix
+                if os.path.exists(filename):
+                    filepath = filename
+                else:
+                    self.logger.warning(f'KissKh part file not found: {filepath}')
+                    return None
+            input_files.append(filepath)
+
+        # Output file: Sonarr expects SXXEYY format
+        output_filename = f'{series_title}.S{season_num:02d}E{ep_num:02d}.mkv'
+        output_path = os.path.join(series_path, output_filename) if series_path else output_filename
+
+        # Build ffmpeg concat filter
+        # Build the concat input string
+        concat_input = '|'.join([f'"{f}"' for f in input_files])
+
+        cmd = [
+            'ffmpeg',
+            '-i', concat_input,
+            '-filter_complex', f'[0:0][1:0][2:0][3:0]concat=n=4:v=0:a=1[out]',
+            '-map', '[out]',
+            '-c', 'copy',  # stream copy to avoid re-encoding
+            output_path
+        ]
+
+        self.logger.debug(f'Running ffmpeg merge: {" ".join(cmd)}')
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode != 0:
+                self.logger.error(f'ffmpeg merge failed: {result.stderr}')
+                # Clean up partial output
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+                return None
+            if not os.path.exists(output_path):
+                self.logger.error('ffmpeg did not produce output file')
+                return None
+            self.logger.info(f'Successfully merged KissKh episodes into {output_path}')
+
+            # Return a mock episode dict that map_episode can work with
+            return {
+                'episode': str(ep_num),
+                'title': series_title,
+                'season': str(season_num),
+                'episode': str(ep_num),
+                'filename': output_filename,
+            }
+        except Exception as e:
+            self.logger.error(f'Exception during ffmpeg merge: {e}')
+            # Clean up partial output
+            if os.path.exists(output_path):
+                os.remove(output_path)
+            return None
+
+    @staticmethod
+    def _is_split_episodes(episodes):
+        '''True if any episode number is a decimal part (e.g. 8.1, 8.2).'''
+        for ep in episodes:
+            ep_no = ep.get('episode')
+            try:
+                f = float(ep_no)
+            except (TypeError, ValueError):
+                continue
+            if f != int(f):
+                return True
+        return False
 
     def run_cycle(self):
         '''
@@ -487,7 +632,7 @@ class UDBSonarrDaemon:
                 total_skipped += len(missing_eps)
                 continue
 
-            client_name, client, matched_series, variant_series = found
+            client_name, client, matched_series, variant_series, site_episodes = found
 
             # If S02+ episodes are missing but no variants were found, search
             # for season-specific entries that weren't in the original results.
@@ -533,13 +678,31 @@ class UDBSonarrDaemon:
                         )
                         variant_series.append(season_match)
 
-            # Fetch episode list from site
-            try:
-                site_episodes = client.fetch_episodes_list(matched_series)
-            except Exception as e:
-                self.logger.error(f'Failed to fetch episode list for [{series_title}] from {client_name}: {e}')
-                total_failed += len(missing_eps)
-                continue
+            # Use pre-fetched episode list from find_series_on_clients when available
+            # (it already chose the best client, preferring whole-episode sources).
+            if site_episodes is None:
+                try:
+                    site_episodes = client.fetch_episodes_list(matched_series)
+                except Exception as e:
+                    self.logger.error(f'Failed to fetch episode list for [{series_title}] from {client_name}: {e}')
+                    total_failed += len(missing_eps)
+                    continue
+
+            # If KissKh split episodes, merge the 4 parts (8.1-8.4) into a single
+            # episode file named per Sonarr convention before mapping/download.
+            if site_episodes and self._is_split_episodes(site_episodes):
+                self.logger.info(f'Merging KissKh split episodes for [{series_title}]')
+                try:
+                    merged_episodes = self._merge_kisskh_episodes(series, site_episodes, series_path)
+                    if merged_episodes is None:
+                        self.logger.warning(f'Failed to merge KissKh split episodes; skipping [{series_title}]')
+                        total_skipped += len(missing_eps)
+                        continue
+                    site_episodes = merged_episodes
+                except Exception as e:
+                    self.logger.error(f'Error merging KissKh split episodes: {e}')
+                    total_skipped += len(missing_eps)
+                    continue
 
             if not site_episodes:
                 self.logger.warning(f'No episodes found on {client_name} for [{matched_series.get("title")}]')
