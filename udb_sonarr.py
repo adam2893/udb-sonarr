@@ -459,13 +459,15 @@ class UDBSonarrDaemon:
             )
         return (client_name, client, primary, variants, episodes)
 
-    def _merge_kisskh_split_episodes(self, client, series, split_episodes,
-                                         site_episodes, series_path):
-        '''Download all 4 KissKh split episode parts (8.1-8.4), merge them
-        with ffmpeg into one file named per Sonarr convention (S01E08.mkv),
-        then clean up the part files.
+    def _merge_kisskh_split_episodes(self, client, series, site_episodes, series_path):
+        '''Download and merge ALL KissKh split episode parts.
 
-        Returns True on success, False on failure.
+        KissKh splits every episode into 4 parts: ep 1 = 1.1,1.2,1.3,1.4,
+        ep 2 = 2.1,2.2,2.3,2.4, etc. This method groups all decimal episodes
+        by their integer part, downloads each group's 4 parts, merges with
+        ffmpeg, and produces one S01EXX.mkv per episode.
+
+        Returns list of merged episode numbers on success, empty list on failure.
         '''
         import subprocess
         import os
@@ -474,239 +476,257 @@ class UDBSonarrDaemon:
         series_title = series.get('title', '')
         season_num = series.get('seasonNumber', 1)
 
-        if not split_episodes:
-            return False
+        if not site_episodes:
+            return []
 
-        # Identify the 4 parts: KissKh episode numbers are 8.1, 8.2, 8.3, 8.4
-        # (returned as float by KissKhClient, not string)
-        parts = {}
-        for ep in split_episodes:
+        # Group episodes by integer part: {1: {1: ep_1.1, 2: ep_1.2, ...}, 2: {...}, ...}
+        groups = {}  # ep_int -> {part_int -> ep_dict}
+        for ep in site_episodes:
             ep_no = ep.get('episode', '')
             try:
                 ep_str = str(ep_no)
                 if '.' not in ep_str:
                     continue
-                part = int(ep_str.split('.')[-1])
+                ep_int = int(float(ep_str.split('.')[0]))
+                part_int = int(ep_str.split('.')[-1])
             except (ValueError, AttributeError):
                 continue
-            parts[part] = ep
+            if ep_int not in groups:
+                groups[ep_int] = {}
+            groups[ep_int][part_int] = ep
 
-        required = [1, 2, 3, 4]
-        if not all(p in parts for p in required):
-            self.logger.warning(
-                f'Missing KissKh split parts for [{series_title}]; '
-                f'found: {sorted(parts.keys())}, needed: {required}'
-            )
-            return False
+        # Keep only groups that have all 4 parts
+        complete_groups = {}
+        for ep_int, parts in sorted(groups.items()):
+            required = [1, 2, 3, 4]
+            if all(p in parts for p in required):
+                complete_groups[ep_int] = parts
+            else:
+                self.logger.warning(
+                    f'  Skipping ep {ep_int}: only have parts {sorted(parts.keys())}, '
+                    f'need {required}'
+                )
 
-        # Determine the integer episode number (8.1 -> 8)
-        first_ep_no = parts[1].get('episode', '1')
-        try:
-            ep_num = int(float(first_ep_no))
-        except (ValueError, TypeError):
-            ep_num = 1
+        if not complete_groups:
+            self.logger.warning(f'No complete 4-part episode groups found for [{series_title}]')
+            return []
+
+        self.logger.info(
+            f'Found {len(complete_groups)} complete split episode group(s) for [{series_title}] '
+            f'(eps {sorted(complete_groups.keys())})'
+        )
 
         # Build the Sonarr season folder path
         season_folder = os.path.join(series_path, f'Season {season_num:02d}')
         os.makedirs(season_folder, exist_ok=True)
 
-        # Download each part individually using the site client
-        part_files = []
-        ep_ranges = {}  # Not used for batch; we download one at a time
-        for part_num in sorted(parts.keys()):
-            ep_dict = parts[part_num]
-            ep_no_str = ep_dict.get('episode', '')
-            self.logger.info(f'  Downloading split part {part_num}/4 (ep {ep_no_str}) for [{series_title}]')
+        merged_episode_numbers = []
 
-            # Build a fake sonarr_ep with the part episode number so
-            # download_episode generates a unique temp filename per part
-            part_sonarr_ep = {
-                'seasonNumber': season_num,
-                'episodeNumber': ep_num,
-                'title': f'{series_title} Part {part_num}',
-            }
-            # Build ep_ranges for just this one part
-            ep_ranges_part = {
-                'start': float(ep_no_str),
-                'end': float(ep_no_str),
-                'specific_no': []
-            }
+        for ep_int in sorted(complete_groups.keys()):
+            parts = complete_groups[ep_int]
+            self.logger.info(
+                f'  Processing split episode {ep_int} '
+                f'(parts {ep_int}.1 through {ep_int}.4)'
+            )
 
-            try:
-                download_links = client.fetch_episode_links(site_episodes, ep_ranges_part)
-                ep_float = float(ep_no_str)
-                if not download_links or ep_float not in download_links:
-                    self.logger.error(f'No download links for split part {ep_no_str}')
-                    return False
+            part_files = []
+            for part_num in sorted(parts.keys()):
+                ep_dict = parts[part_num]
+                ep_no_str = str(ep_dict.get('episode', ''))
+                self.logger.info(f'    Downloading part {part_num}/4 (ep {ep_no_str})')
 
-                ep_links = download_links[ep_float]
-                if 'error' in ep_links:
-                    self.logger.error(f'Site error for part {ep_no_str}: {ep_links["error"]}')
-                    return False
-
-                available_res = [k for k in ep_links.keys() if k not in ('error', 'original')]
-                if not available_res:
-                    self.logger.error(f'No resolutions for part {ep_no_str}')
-                    return False
-
-                selected_res = None
-                for q in self.qualities:
-                    if q in available_res:
-                        selected_res = q
-                        break
-                if not selected_res:
-                    selected_res = client._resolution_selector(
-                        available_res, self.qualities[0], client.selector_strategy
-                    )
-                if not selected_res:
-                    selected_res = available_res[0]
-
-                res_data = ep_links.get(selected_res)
-                if not res_data or 'downloadLink' not in res_data:
-                    self.logger.error(f'No download link for part {ep_no_str} res {selected_res}')
-                    return False
-
-                download_link = res_data['downloadLink']
-                download_type = res_data.get('downloadType', 'hls')
-
-                # Use a temp filename for each part
-                part_filename = f'_kisskh_part_{part_num}.mp4'
-                part_path = os.path.join(season_folder, part_filename)
-
-                ep_details = {
-                    'episodeName': part_filename,
-                    'downloadLink': download_link,
-                    'downloadType': download_type,
-                    'season': season_num,
-                    'type': 'tv'
+                ep_ranges_part = {
+                    'start': float(ep_no_str),
+                    'end': float(ep_no_str),
+                    'specific_no': []
                 }
-                if 'audioLink' in res_data and res_data['audioLink']:
-                    ep_details['audio'] = res_data['audioLink']
 
-                site_ep_data = client.udb_episode_dict.get(ep_float, {})
-                if 'subtitles' in site_ep_data:
-                    ep_details['subtitles'] = site_ep_data['subtitles']
-                if 'encrypted_subs_details' in site_ep_data:
-                    ep_details['encrypted_subs_details'] = site_ep_data['encrypted_subs_details']
-
-                from Utils.YtDlpDownloader import YtDlpDownloader
-                dl_config = dict(self.downloader_config)
-                dl_config['download_dir'] = season_folder
-                dl_config['quality'] = int(selected_res)
-                dl_config['referer'] = getattr(client, 'base_url', '')
-                dl_config['_aes_decrypt'] = getattr(client, '_aes_decrypt', None)
-                dl_client = YtDlpDownloader(dl_config, ep_details)
-
-                links_to_try = [download_link] + list(res_data.get('alternateLinks', []))
-                status, msg = 1, 'no sources'
-                for i, link in enumerate(links_to_try):
-                    if i > 0:
-                        self.logger.info(f'  Trying alternate source for part {part_num}')
-                    status, msg = dl_client.start_download(link)
-                    if status == 0:
+                try:
+                    download_links = client.fetch_episode_links(site_episodes, ep_ranges_part)
+                    ep_float = float(ep_no_str)
+                    if not download_links or ep_float not in download_links:
+                        self.logger.error(f'    No download links for part {ep_no_str}')
                         break
-                    self.logger.warning(f'  Part {part_num} source {i + 1} failed: {msg}')
 
-                # Last resort: sniff m3u8 for embed types
-                if status != 0 and download_type == 'embed':
-                    self.logger.info(f'  Sniffing m3u8 for part {part_num}')
-                    from Utils.M3u8Sniffer import M3u8Sniffer
-                    sniffer = M3u8Sniffer(timeout=30)
-                    m3u8_url = None
-                    for link in links_to_try:
-                        m3u8_url = sniffer.sniff(link, referer=getattr(client, 'base_url', ''))
+                    ep_links = download_links[ep_float]
+                    if 'error' in ep_links:
+                        self.logger.error(f'    Site error for part {ep_no_str}: {ep_links["error"]}')
+                        break
+
+                    available_res = [k for k in ep_links.keys() if k not in ('error', 'original')]
+                    if not available_res:
+                        self.logger.error(f'    No resolutions for part {ep_no_str}')
+                        break
+
+                    selected_res = None
+                    for q in self.qualities:
+                        if q in available_res:
+                            selected_res = q
+                            break
+                    if not selected_res:
+                        selected_res = client._resolution_selector(
+                            available_res, self.qualities[0], client.selector_strategy
+                        )
+                    if not selected_res:
+                        selected_res = available_res[0]
+
+                    res_data = ep_links.get(selected_res)
+                    if not res_data or 'downloadLink' not in res_data:
+                        self.logger.error(f'    No download link for part {ep_no_str} res {selected_res}')
+                        break
+
+                    download_link = res_data['downloadLink']
+                    download_type = res_data.get('downloadType', 'hls')
+
+                    part_filename = f'_kisskh_ep{ep_int}_part{part_num}.mp4'
+
+                    ep_details = {
+                        'episodeName': part_filename,
+                        'downloadLink': download_link,
+                        'downloadType': download_type,
+                        'season': season_num,
+                        'type': 'tv'
+                    }
+                    if 'audioLink' in res_data and res_data['audioLink']:
+                        ep_details['audio'] = res_data['audioLink']
+
+                    site_ep_data = client.udb_episode_dict.get(ep_float, {})
+                    if 'subtitles' in site_ep_data:
+                        ep_details['subtitles'] = site_ep_data['subtitles']
+                    if 'encrypted_subs_details' in site_ep_data:
+                        ep_details['encrypted_subs_details'] = site_ep_data['encrypted_subs_details']
+
+                    from Utils.YtDlpDownloader import YtDlpDownloader
+                    dl_config = dict(self.downloader_config)
+                    dl_config['download_dir'] = season_folder
+                    dl_config['quality'] = int(selected_res)
+                    dl_config['referer'] = getattr(client, 'base_url', '')
+                    dl_config['_aes_decrypt'] = getattr(client, '_aes_decrypt', None)
+                    dl_client = YtDlpDownloader(dl_config, ep_details)
+
+                    links_to_try = [download_link] + list(res_data.get('alternateLinks', []))
+                    status, msg = 1, 'no sources'
+                    for i, link in enumerate(links_to_try):
+                        if i > 0:
+                            self.logger.info(f'    Trying alternate source for part {part_num}')
+                        status, msg = dl_client.start_download(link)
+                        if status == 0:
+                            break
+                        self.logger.warning(f'    Part {part_num} source {i + 1} failed: {msg}')
+
+                    if status != 0 and download_type == 'embed':
+                        self.logger.info(f'    Sniffing m3u8 for part {part_num}')
+                        from Utils.M3u8Sniffer import M3u8Sniffer
+                        sniffer = M3u8Sniffer(timeout=30)
+                        m3u8_url = None
+                        for link in links_to_try:
+                            m3u8_url = sniffer.sniff(link, referer=getattr(client, 'base_url', ''))
+                            if m3u8_url:
+                                break
                         if m3u8_url:
-                            break
-                    if m3u8_url:
-                        dl_config2 = dict(self.downloader_config)
-                        dl_config2['download_dir'] = season_folder
-                        dl_config2['_controller'] = DownloadController()
-                        from Utils.HLSDownloader import HLSDownloader
-                        dl_client_hls = HLSDownloader(dl_config2, ep_details)
-                        status, msg = dl_client_hls.start_download(m3u8_url)
+                            dl_config2 = dict(self.downloader_config)
+                            dl_config2['download_dir'] = season_folder
+                            dl_config2['_controller'] = DownloadController()
+                            from Utils.HLSDownloader import HLSDownloader
+                            dl_client_hls = HLSDownloader(dl_config2, ep_details)
+                            status, msg = dl_client_hls.start_download(m3u8_url)
 
-                if status != 0:
-                    self.logger.error(f'Failed to download split part {ep_no_str}: {msg}')
-                    return False
-
-                # yt-dlp may save with a slightly different name; find it
-                # by looking for recently created mp4/mkv files
-                _time.sleep(0.5)
-                found = None
-                for f in os.listdir(season_folder):
-                    if f.startswith('_kisskh_part_') and f.endswith(part_filename):
-                        found = os.path.join(season_folder, f)
+                    if status != 0:
+                        self.logger.error(f'    Failed to download part {ep_no_str}: {msg}')
                         break
-                if not found:
-                    # yt-dlp sometimes names the file based on the episodeName
+
+                    # Find the downloaded file
+                    _time.sleep(0.5)
+                    found = None
+                    target_name = part_filename
                     for f in os.listdir(season_folder):
-                        fp = os.path.join(season_folder, f)
-                        if os.path.isfile(fp) and f.endswith('.mp4') and f not in [p for p in part_files]:
-                            found = fp
+                        if f == target_name:
+                            found = os.path.join(season_folder, f)
                             break
-                if found:
-                    part_files.append(found)
-                    self.logger.info(f'  Part {part_num} downloaded: {found}')
-                else:
-                    self.logger.error(f'Part {part_num} file not found after download')
-                    return False
+                    if not found:
+                        for f in os.listdir(season_folder):
+                            fp = os.path.join(season_folder, f)
+                            if os.path.isfile(fp) and f.endswith('.mp4') and f not in part_files:
+                                found = fp
+                                break
+                    if found:
+                        part_files.append(found)
+                        self.logger.info(f'    Part {part_num} downloaded: {found}')
+                    else:
+                        self.logger.error(f'    Part {part_num} file not found after download')
+                        break
 
+                except Exception as e:
+                    self.logger.error(f'    Error downloading part {ep_no_str}: {e}')
+                    break
+
+            # Need all 4 parts to merge
+            if len(part_files) != 4:
+                self.logger.error(f'    Only got {len(part_files)}/4 parts for ep {ep_int}, skipping merge')
+                for pf in part_files:
+                    try:
+                        os.remove(pf)
+                    except OSError:
+                        pass
+                continue
+
+            # Merge with ffmpeg
+            output_filename = f'{series_title}.S{season_num:02d}E{ep_int:02d}.mkv'
+            output_path = os.path.join(season_folder, output_filename)
+
+            concat_list_path = os.path.join(season_folder, f'_kisskh_concat_ep{ep_int}.txt')
+            with open(concat_list_path, 'w') as clf:
+                for pf in part_files:
+                    clf.write(f"file '{os.path.abspath(pf)}'\n")
+
+            cmd = [
+                'ffmpeg', '-y',
+                '-f', 'concat', '-safe', '0',
+                '-i', concat_list_path,
+                '-c', 'copy',
+                output_path
+            ]
+
+            self.logger.info(f'    Merging 4 parts -> {output_path}')
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                if result.returncode != 0:
+                    self.logger.error(f'    ffmpeg merge failed: {result.stderr[-500:]}')
+                    if os.path.exists(output_path):
+                        os.remove(output_path)
+                    for pf in part_files:
+                        try:
+                            os.remove(pf)
+                        except OSError:
+                            pass
+                    continue
+                if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+                    self.logger.error('    ffmpeg produced no valid output')
+                    for pf in part_files:
+                        try:
+                            os.remove(pf)
+                        except OSError:
+                            pass
+                    continue
+                self.logger.info(f'    Successfully merged ep {ep_int} -> {output_path}')
+                merged_episode_numbers.append(ep_int)
             except Exception as e:
-                self.logger.error(f'Error downloading split part {ep_no_str}: {e}')
-                return False
-
-        if len(part_files) != 4:
-            self.logger.error(f'Expected 4 part files, got {len(part_files)}')
-            return False
-
-        # Merge with ffmpeg
-        output_filename = f'{series_title}.S{season_num:02d}E{ep_num:02d}.mkv'
-        output_path = os.path.join(season_folder, output_filename)
-
-        # Build concat file list for ffmpeg
-        concat_list_path = os.path.join(season_folder, '_kisskh_concat.txt')
-        with open(concat_list_path, 'w') as clf:
-            for pf in part_files:
-                clf.write(f"file '{os.path.abspath(pf)}'\n")
-
-        cmd = [
-            'ffmpeg', '-y',
-            '-f', 'concat', '-safe', '0',
-            '-i', concat_list_path,
-            '-c', 'copy',
-            output_path
-        ]
-
-        self.logger.info(f'Merging 4 KissKh parts into {output_path}')
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            if result.returncode != 0:
-                self.logger.error(f'ffmpeg merge failed: {result.stderr[-500:]}')
+                self.logger.error(f'    ffmpeg exception: {e}')
                 if os.path.exists(output_path):
                     os.remove(output_path)
-                return False
-            if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
-                self.logger.error('ffmpeg did not produce a valid output file')
-                return False
-            self.logger.info(f'Successfully merged KissKh episodes -> {output_path}')
-        except Exception as e:
-            self.logger.error(f'ffmpeg merge exception: {e}')
-            if os.path.exists(output_path):
-                os.remove(output_path)
-            return False
 
-        # Clean up part files and concat list
-        for pf in part_files:
+            # Clean up part files
+            for pf in part_files:
+                try:
+                    os.remove(pf)
+                except OSError:
+                    pass
             try:
-                os.remove(pf)
+                os.remove(concat_list_path)
             except OSError:
                 pass
-        try:
-            os.remove(concat_list_path)
-        except OSError:
-            pass
 
-        return True
+        return merged_episode_numbers
 
     @staticmethod
     def _is_split_episodes(episodes):
@@ -870,23 +890,26 @@ class UDBSonarrDaemon:
                 f'(Sonarr reports: {series.get("path", "?")})'
             )
 
-            # If KissKh split episodes (8.1-8.4), download all 4 parts and
-            # merge with ffmpeg before the normal per-episode download loop.
+            # If KissKh split episodes (decimal episode numbers like 1.1, 8.3),
+            # download all parts per episode and merge with ffmpeg.
             if site_episodes and self._is_split_episodes(site_episodes):
                 self.logger.info(f'Downloading and merging KissKh split episodes for [{series_title}]')
                 try:
-                    merged = self._merge_kisskh_split_episodes(
-                        client, series, site_episodes, site_episodes, series_path
+                    merged_ep_nums = self._merge_kisskh_split_episodes(
+                        client, series, site_episodes, series_path
                     )
                 except Exception as e:
                     self.logger.error(f'Error merging KissKh split episodes: {e}')
-                    merged = False
-                if merged:
+                    merged_ep_nums = []
+                if merged_ep_nums:
                     for ep in missing_eps:
-                        ep_key = f'{series_id}-S{ep["seasonNumber"]:02d}E{ep["episodeNumber"]:02d}'
-                        self.completed_downloads[ep_key] = True
-                    total_downloaded += len(missing_eps)
-                    colprint('success', f'    Merged 4 parts -> S{missing_eps[0]["seasonNumber"]:02d}E{missing_eps[0]["episodeNumber"]:02d}')
+                        if ep['episodeNumber'] in merged_ep_nums:
+                            ep_key = f'{series_id}-S{ep["seasonNumber"]:02d}E{ep["episodeNumber"]:02d}'
+                            self.completed_downloads[ep_key] = True
+                    total_downloaded += len(merged_ep_nums)
+                    colprint('success',
+                             f'    Merged {len(merged_ep_nums)} split episode(s) -> '
+                             f'eps {sorted(merged_ep_nums)}')
                 else:
                     self.logger.warning(f'Failed to merge KissKh split episodes; skipping [{series_title}]')
                     total_skipped += len(missing_eps)
