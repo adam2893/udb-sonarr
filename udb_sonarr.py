@@ -396,17 +396,19 @@ class UDBSonarrDaemon:
                                         self.matcher._title_matches_season(v_res.get('title', ''), 4)
                     
                     # Word overlap check: require at least 2 meaningful words shared
+                    # (prevents single-word containment like "Runaway" matching "Runaway Healer")
                     sonarr_words = set(sonarr_norm.split()) - SeriesMatcher.COMMON_WORDS
                     v_words = set(v_norm.split()) - SeriesMatcher.COMMON_WORDS
                     word_overlap = len(sonarr_words & v_words) / max(len(sonarr_words | v_words), 1)
+                    min_shared_words = 2
                     
                     is_variant = False
                     if has_season_marker:
                         is_variant = True
-                    elif v_sim_sonarr >= 0.75 and word_overlap >= 0.3:
+                    elif v_sim_sonarr >= 0.75 and word_overlap >= 0.3 and len(sonarr_words & v_words) >= min_shared_words:
                         # High similarity with meaningful word overlap (not just single-word containment)
                         is_variant = True
-                    elif v_sim_primary >= 0.75 and word_overlap >= 0.3:
+                    elif v_sim_primary >= 0.75 and word_overlap >= 0.3 and len(sonarr_words & v_words) >= min_shared_words:
                         is_variant = True
                     
                     self.logger.info(
@@ -497,6 +499,47 @@ class UDBSonarrDaemon:
                                 f'found: {list(parts.keys())}, needed: {required}')
             return None
 
+    @staticmethod
+    def _merge_kisskh_episodes(series, split_episodes, series_path):
+        '''Merge KissKh's 4 split episode parts (8.1-8.4) into one file
+        named per Sonarr convention (Show.S01E08.mkv).
+
+        Returns the merged episode dict or None on failure.
+        '''
+        import subprocess
+        import os
+
+        series_title = series.get('title', '')
+        season_num = series.get('seasonNumber', 1)
+        # Get the first episode number to determine episode number
+        # split_episodes is a list of episode dicts; pick one to get the ep number
+        if not split_episodes:
+            return None
+        first_ep = split_episodes[0]
+        ep_no = first_ep.get('episode')
+        try:
+            ep_num = int(ep_no) if str(ep_no).endswith('.0') else ep_no
+        except (ValueError, TypeError):
+            ep_num = 1
+
+        # Find the 4 parts. KissKh episode numbers are like "8.1", "8.2", "8.3", "8.4"
+        parts = {}
+        for ep in split_episodes:
+            ep_no = ep.get('episode', '')
+            # Extract part number: "8.1" -> 1
+            try:
+                part = int(ep_no.split('.')[-1])
+            except (ValueError, AttributeError):
+                part = 1
+            parts[part] = ep
+
+        # We need parts 1, 2, 3, 4
+        required = [1, 2, 3, 4]
+        if not all(p in parts for p in required):
+            self.logger.warning(f'Missing KissKh split parts for [{series_title}]; '
+                                f'found: {list(parts.keys())}, needed: {required}')
+            return None
+
         # Build input file list for ffmpeg concat
         # Sort parts by part number
         sorted_parts = sorted(parts.items(), key=lambda x: x[0])
@@ -507,15 +550,22 @@ class UDBSonarrDaemon:
             # output template. We'll construct the expected path based on the
             # episode info.
             filename = ep_dict.get('filename', f'{series_title}.S{season_num:02d}E{ep_num:02d}.part{part_num}')
-            # Try to find the file in the series_path or current dir
-            filepath = os.path.join(series_path, filename) if series_path else filename
-            if not os.path.exists(filepath):
-                # Try without the series_path prefix
-                if os.path.exists(filename):
-                    filepath = filename
-                else:
-                    self.logger.warning(f'KissKh part file not found: {filepath}')
-                    return None
+            # Determine the directory to search for part files
+            # If series_path is available (Sonarr-set), search there first;
+            # otherwise search the current working directory.
+            search_dir = series_path if series_path else None
+            filepath = None
+            # Try in series_path first
+            if search_dir:
+                candidate = os.path.join(search_dir, filename)
+                if os.path.exists(candidate):
+                    filepath = candidate
+            # Fall back to current working directory
+            if filepath is None and os.path.exists(filename):
+                filepath = filename
+            if filepath is None:
+                self.logger.warning(f'KissKh part file not found: {filename} (searched in {search_dir})')
+                return None
             input_files.append(filepath)
 
         # Output file: Sonarr expects SXXEYY format
