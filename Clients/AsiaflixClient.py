@@ -30,7 +30,8 @@ class AsiaflixClient(BaseClient):
         self.selector_strategy = config.get(
             'alternate_resolution_selector', 'highest'
         )
-        super().__init__(config.get('request_timeout', 30), session)
+        super().__init__(config.get('request_timeout', 30), session,
+                         daemon_mode=config.get('daemon_mode', False))
         self.logger.debug(f'Asiaflix client initialized with {config = }')
 
     def _first_alive(self, configured):

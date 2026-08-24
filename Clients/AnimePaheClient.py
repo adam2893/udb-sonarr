@@ -26,7 +26,8 @@ class AnimePaheClient(BaseClient):
         self.anime_id = ''      # anime id. required to create referer link
         self.selector_strategy = config.get('alternate_resolution_selector', 'lowest')
         self.hls_size_accuracy = config.get('hls_size_accuracy', 0)
-        super().__init__(config['request_timeout'], session)
+        super().__init__(config['request_timeout'], session,
+                         daemon_mode=config.get('daemon_mode', False))
         self.logger.debug(f'AnimePahe client initialized with {config = }')
 
     # step-1.1.1

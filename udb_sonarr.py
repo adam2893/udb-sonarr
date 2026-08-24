@@ -248,6 +248,7 @@ class UDBSonarrDaemon:
             if 'download_dir' not in client_config:
                 client_config['download_dir'] = self.downloader_config['download_dir']
             client_config['request_timeout'] = self.downloader_config.get('request_timeout', 30)
+            client_config['daemon_mode'] = True
 
             try:
                 # Lazy import

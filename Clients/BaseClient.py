@@ -23,10 +23,11 @@ class BaseClient():
     '''
     Base Client Implementation for Site-specific clients
     '''
-    def __init__(self, request_timeout=30, session=None):
+    def __init__(self, request_timeout=30, session=None, daemon_mode=False):
         # create a requests session and use across to re-use cookies
         self.req_session = session if session else requests.Session()
         self.request_timeout = request_timeout
+        self.daemon_mode = daemon_mode
         try:
             self.hls_size_accuracy
         except AttributeError:
@@ -65,8 +66,12 @@ class BaseClient():
 
     def _colprint(self, theme, text, **kwargs):
         '''
-        Wrapper for color printer function
+        Wrapper for color printer function.
+        When daemon_mode is True, suppress non-essential output
+        (search results, etc.) — only pass through user_input prompts.
         '''
+        if self.daemon_mode and 'input' not in theme:
+            return
         if 'input' in theme:
             return colprint(theme, text, **kwargs)
         else:

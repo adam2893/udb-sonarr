@@ -26,7 +26,8 @@ class KissKhClient(BaseClient):
         self.selector_strategy = config.get('alternate_resolution_selector', 'lowest')
         self.hls_size_accuracy = config.get('hls_size_accuracy', 0)
         self.search_limit = config.get('search_limit', 20)
-        super().__init__(config.get('request_timeout', 30), session)
+        super().__init__(config.get('request_timeout', 30), session,
+                         daemon_mode=config.get('daemon_mode', False))
         self.logger.debug(f'KissKh Drama client initialized with {config = }')
         self.token_generation_js_code = None
         self.quickjs_context = None
