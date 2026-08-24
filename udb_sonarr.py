@@ -476,12 +476,16 @@ class UDBSonarrDaemon:
         if not split_episodes:
             return False
 
-        # Identify the 4 parts: KissKh episode numbers are "8.1", "8.2", "8.3", "8.4"
+        # Identify the 4 parts: KissKh episode numbers are 8.1, 8.2, 8.3, 8.4
+        # (returned as float by KissKhClient, not string)
         parts = {}
         for ep in split_episodes:
             ep_no = ep.get('episode', '')
             try:
-                part = int(ep_no.split('.')[-1])
+                ep_str = str(ep_no)
+                if '.' not in ep_str:
+                    continue
+                part = int(ep_str.split('.')[-1])
             except (ValueError, AttributeError):
                 continue
             parts[part] = ep
