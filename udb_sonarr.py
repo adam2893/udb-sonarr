@@ -372,6 +372,12 @@ class UDBSonarrDaemon:
                 # title but not with the primary's full title (e.g. Sonarr
                 # "Apple" vs primary "Apple My Love" vs variant "(Your) Apple
                 # Season 2" — the variant matches Sonarr but not the primary).
+                # Detect season-split variants ("X" + "X Season 2"). Variants
+                # are scored against BOTH the primary's title and the Sonarr
+                # title — a "Season 2" entry may share words with the Sonarr
+                # title but not with the primary's full title (e.g. Sonarr
+                # "Apple" vs primary "Apple My Love" vs variant "(Your) Apple
+                # Season 2" — the variant matches Sonarr but not the primary).
                 variants = []
                 sonarr_norm = self.matcher._normalize_title(series_title)
                 primary_norm = self.matcher._normalize_title(primary.get('title', ''))
@@ -386,13 +392,35 @@ class UDBSonarrDaemon:
                     v_norm = self.matcher._normalize_title(v_res.get('title', ''))
                     v_sim_primary = self.matcher._similarity(primary_norm, v_norm)
                     v_sim_sonarr = self.matcher._similarity(sonarr_norm, v_norm)
+                    
+                    # Stricter variant detection: require either
+                    # 1. Season marker in title (e.g. "Season 2", "Part 2", "S2")
+                    # 2. High similarity with multiple shared words (not just single-word containment)
+                    has_season_marker = self.matcher._title_matches_season(v_res.get('title', ''), 2) or \
+                                        self.matcher._title_matches_season(v_res.get('title', ''), 3) or \
+                                        self.matcher._title_matches_season(v_res.get('title', ''), 4)
+                    
+                    # Word overlap check: require at least 2 meaningful words shared
+                    sonarr_words = set(sonarr_norm.split()) - SeriesMatcher.COMMON_WORDS
+                    v_words = set(v_norm.split()) - SeriesMatcher.COMMON_WORDS
+                    word_overlap = len(sonarr_words & v_words) / max(len(sonarr_words | v_words), 1)
+                    
+                    is_variant = False
+                    if has_season_marker:
+                        is_variant = True
+                    elif v_sim_sonarr >= 0.75 and word_overlap >= 0.3:
+                        # High similarity with meaningful word overlap (not just single-word containment)
+                        is_variant = True
+                    elif v_sim_primary >= 0.75 and word_overlap >= 0.3:
+                        is_variant = True
+                    
                     self.logger.info(
                         f'  Variant check: [{v_res.get("title")}] -> '
                         f'v_norm="{v_norm}", vs_primary={v_sim_primary:.2f}, '
-                        f'vs_sonarr={v_sim_sonarr:.2f}, '
-                        f'pass={v_sim_primary >= self.matcher.match_threshold or v_sim_sonarr >= self.matcher.match_threshold}'
+                        f'vs_sonarr={v_sim_sonarr:.2f}, word_overlap={word_overlap:.2f}, '
+                        f'has_season_marker={has_season_marker}, is_variant={is_variant}'
                     )
-                    if v_sim_primary >= self.matcher.match_threshold or v_sim_sonarr >= self.matcher.match_threshold:
+                    if is_variant:
                         variants.append(v_res)
 
                 if variants:
