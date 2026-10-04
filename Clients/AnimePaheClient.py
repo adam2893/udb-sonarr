@@ -37,26 +37,27 @@ class AnimePaheClient(BaseClient):
         Returns a dictionary of cookies
         '''
         driver = self._get_undetected_chrome_driver(client='AnimePaheClient')
-        driver.get(url)
+        try:
+            driver.get(url)
 
-        retry_cnt = 1
-        while retry_cnt <= max_retries:
-            try:
-                self.logger.debug('Checking if site is loaded...')
-                driver.find_element(By.XPATH, check_condition)
-                break
-            except NoSuchElementException as nsee:
-                self.logger.debug(f'Site not loaded! Waiting for DDoS check to complete. Retry count: {retry_cnt} / {max_retries}')
-                retry_cnt += 1
-                sleep(wait_time_in_secs)
+            retry_cnt = 1
+            while retry_cnt <= max_retries:
+                try:
+                    self.logger.debug('Checking if site is loaded...')
+                    driver.find_element(By.XPATH, check_condition)
+                    break
+                except NoSuchElementException:
+                    self.logger.debug(f'Site not loaded! Waiting for DDoS check to complete. Retry count: {retry_cnt} / {max_retries}')
+                    retry_cnt += 1
+                    sleep(wait_time_in_secs)
 
-        if retry_cnt > max_retries:
-            driver.quit()
-            raise Exception(f'Failed to load site within {max_retries*wait_time_in_secs} seconds')
-        else:
+            if retry_cnt > max_retries:
+                raise Exception(f'Failed to load site within {max_retries*wait_time_in_secs} seconds')
             self.logger.debug('Site loaded successfully! Extracting cookies...')
             all_cookies = driver.get_cookies()
-            driver.close()
+        finally:
+            # quit also closes the window and, unlike close(), reliably tears
+            # down the driver service when navigation/cookie retrieval fails.
             driver.quit()
 
         cookies = {}

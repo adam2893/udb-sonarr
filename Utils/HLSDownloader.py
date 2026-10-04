@@ -2,6 +2,7 @@ __author__ = 'Prudhvi PLN'
 
 import os
 import re
+from urllib.parse import urljoin
 
 from Utils.commons import retry
 from Utils.BaseDownloader import BaseDownloader
@@ -45,8 +46,8 @@ class HLSDownloader(BaseDownloader):
 
     def _collect_ts_urls(self, m3u8_link, m3u8_data):
         # Improved regex to handle all cases. (get all lines except those starting with #)
-        base_url = '/'.join(m3u8_link.split('/')[:-1])
-        normalize_url = lambda url, base_url: (url if url.startswith('http') else 'https:' + url if url.startswith('//') else base_url + '/' + url)
+        base_url = '/'.join(m3u8_link.split('/')[:-1]) + '/'
+        normalize_url = lambda url, base_url: urljoin(base_url, url)
         # Some m3u8 files have duplicate urls, so using set to remove duplicates
         urls = list(set( normalize_url(url.group(0), base_url) for url in re.finditer("^(?!#).+$", m3u8_data, re.MULTILINE) ))
 

@@ -7,7 +7,7 @@ import requests
 import os
 from bs4 import BeautifulSoup as BS
 from copy import deepcopy
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urljoin
 
 # modules for encryption
 import base64
@@ -47,10 +47,12 @@ class BaseClient():
         self.logger = logging.getLogger()
         # re-usable lambda functions
         self._regex_extract = lambda rgx, txt, grp: re.search(rgx, txt).group(grp) if re.search(rgx, txt) else False
-        self._normalize_url = lambda url, base_url: (
-            url if url.startswith('http') else
-            f"{urlparse(base_url).scheme}://{urlparse(base_url).netloc}{url}" if url.startswith('/') else
-            f"{base_url}/{url}"
+        # Most callers pass the URL of the containing directory (rather than
+        # a document URL).  Keep that convention while letting urljoin handle
+        # absolute, scheme-relative, root-relative, query-only and normal
+        # relative references correctly.
+        self._normalize_url = lambda url, base_url: urljoin(
+            base_url if base_url.endswith('/') else base_url + '/', url
         )
         self._fmted_ep_no = lambda x: str(x) if '.' in str(x) else f'{int(x):02d}'
 
@@ -745,6 +747,8 @@ class BaseClient():
             '''
             Suppress the exception saying "OSError: [WinError 6] The handle is invalid"
             '''
+            if getattr(uc.Chrome, '_udb_suppressed_del', False):
+                return
             old_del = uc.Chrome.__del__
 
             def new_del(self) -> None:
@@ -754,6 +758,7 @@ class BaseClient():
                     pass
             
             setattr(uc.Chrome, '__del__', new_del)
+            uc.Chrome._udb_suppressed_del = True
 
         def __get_chrome_version(chrome_path):
             '''
