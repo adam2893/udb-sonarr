@@ -37,8 +37,9 @@ SonarrConfig:
   
   # Which site clients to use for downloading
   # Can be a single name, a list, or 'all'
-  # Options: kisskh, animepahe
-  # 'all' tries each client in order until one has the series
+  # Options: kisskh, animepahe, asiaflix; experimental opt-in: 7movies
+  # 'all' retains kisskh, animepahe, asiaflix only (KissKh preferred).
+  # To opt in: site_client: [kisskh, animepahe, asiaflix, 7movies]
   site_client: all
   
   # Only process series that carry at least one of these Sonarr tags.
@@ -53,6 +54,8 @@ SonarrConfig:
   # Get a free key: https://www.themoviedb.org/settings/api
   # Sonarr v4 series carry a tmdbId; v3 falls back to tvdbId via TMDB /find.
   tmdb_api_key: ''
+  # 7movies uses exact TMDB IDs, not title/country scoring. This key is
+  # needed only for its TVDB-to-TMDB fallback when Sonarr has no tmdbId.
 
   # Series matching settings
   match_threshold: 0.6        # Minimum title similarity (0.0-1.0)
@@ -154,6 +157,15 @@ Asian Dramas & Movies (Asiaflix):
   # returns 'Us (2025)' only at position 6+ with the year appended).
   search_limit: 20
 
+  alternate_resolution_selector: 'highest'
+
+# ─────────────────────────────────────────────────────────────
+# Optional 7Movies Configuration (experimental; not enabled by 'all')
+# ─────────────────────────────────────────────────────────────
+Movies & TV Shows (7Movies):
+  base_url: https://7movies.ac/
+  download_dir: /tmp/udb-sonarr
+  request_timeout: 30
   alternate_resolution_selector: 'highest'
 
 # ─────────────────────────────────────────────────────────────

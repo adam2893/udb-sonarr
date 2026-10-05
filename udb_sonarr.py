@@ -217,6 +217,11 @@ class UDBSonarrDaemon:
 
     # Map client names to their UDB config keys and import paths
     CLIENT_REGISTRY = {
+        '7movies': {
+            'config_key': 'Movies & TV Shows (7Movies)',
+            'import_path': 'Clients.SevenMoviesClient',
+            'class_name': 'SevenMoviesClient'
+        },
         'kisskh': {
             'config_key': 'Anime, Drama, Movies & TV Shows (Kisskh)',
             'import_path': 'Clients.KissKhClient',
@@ -265,6 +270,24 @@ class UDBSonarrDaemon:
             colprint('error', 'No site clients could be initialized. Check config and dependencies.')
             raise ExitException(1)
 
+    def _enrich_series_origin(self, series):
+        if SeriesMatcher.series_origin_countries(series) or not self.tmdb_client:
+            return series
+        try:
+            origins = self.tmdb_client.get_series_origin_countries(
+                tmdb_id=series.get('tmdbId'), tvdb_id=series.get('tvdbId'),
+            )
+            if isinstance(origins, list):
+                origins = [c for c in origins if isinstance(c, str) and c.strip()]
+                if origins:
+                    enriched = dict(series)
+                    enriched['originCountries'] = origins
+                    self.logger.debug('Series origin enriched from TMDB origin_country (%d countries)', len(origins))
+                    return enriched
+        except Exception:
+            self.logger.debug('TMDB origin lookup unavailable; retaining existing country matching')
+        return series
+
     def find_series_on_clients(self, series_title: str, sonarr_series: Dict):
         '''
         Try each configured site client to find the series.
@@ -275,10 +298,25 @@ class UDBSonarrDaemon:
         sites that keep one series (KissKh). Tries clients in order; returns
         first client with a match.
         '''
+        sonarr_series = self._enrich_series_origin(sonarr_series)
         matches = []
         for client_name in self.site_client_names:
             client = self.site_clients.get(client_name)
             if not client:
+                continue
+
+            if client_name == '7movies':
+                try:
+                    primary = client.lookup_series(sonarr_series, tmdb_client=self.tmdb_client)
+                    if primary:
+                        primary = dict(primary)
+                        primary['sonarr_seasons'] = [
+                            s['seasonNumber'] for s in sonarr_series.get('seasons', [])
+                            if isinstance(s, dict) and 'seasonNumber' in s
+                        ]
+                        matches.append((client_name, client, primary, []))
+                except Exception as e:
+                    self.logger.warning(f'7movies ID lookup failed: {e}')
                 continue
 
             # KissKh's search API is literal-ish: 'q=Us' does NOT return
@@ -325,13 +363,13 @@ class UDBSonarrDaemon:
                 # the results client-side. Only filter when both sides have country data
                 # — if Sonarr has no country or the result has no country, skip the check
                 # (don't be too aggressive).
-                sonarr_country = sonarr_series.get('countryCode') or sonarr_series.get('country') or ''
+                sonarr_country = SeriesMatcher.series_origin_countries(sonarr_series)
                 if sonarr_country and search_results:
                     filtered = {}
                     dropped = 0
                     for idx, result in search_results.items():
                         result_country = result.get('country') or ''
-                        if result_country and not SeriesMatcher._countries_match(sonarr_country, result_country):
+                        if result_country and not SeriesMatcher.series_country_matches(sonarr_series, result_country):
                             self.logger.debug(
                                 f'Post-filter: dropping [{result.get("title")}] ({result_country}) '
                                 f'— doesn\'t match Sonarr country ({sonarr_country})'
@@ -805,12 +843,13 @@ class UDBSonarrDaemon:
                 ep.get('seasonNumber', 1) for ep in missing_eps
                 if ep.get('seasonNumber', 1) > 1
             )
-            if missing_seasons_gt1 and not variant_series:
+            if client_name != '7movies' and missing_seasons_gt1 and not variant_series:
                 self.logger.info(
                     f'No variants found for [{series_title}] but S02+ episodes '
                     f'are missing — searching for season-specific entries'
                 )
-                sonarr_country = series.get('countryCode') or series.get('country') or ''
+                series = self._enrich_series_origin(series)
+                sonarr_country = SeriesMatcher.series_origin_countries(series)
                 for season in sorted(missing_seasons_gt1):
                     season_query = f'{series_title} Season {season}'
                     self.logger.debug(f'Searching for season variant: [{season_query}]')
@@ -826,7 +865,7 @@ class UDBSonarrDaemon:
                         filtered = {}
                         for idx, res in season_results.items():
                             res_country = res.get('country') or ''
-                            if res_country and not SeriesMatcher._countries_match(sonarr_country, res_country):
+                            if res_country and not SeriesMatcher.series_country_matches(series, res_country):
                                 continue
                             filtered[idx] = res
                         season_results = filtered
@@ -929,8 +968,11 @@ class UDBSonarrDaemon:
                 # Map Sonarr episode to site episode.
                 # variant_episodes are consulted when the flat map fails
                 # (Asiaflix-style season splits).
-                site_ep = self.matcher.map_episode(ep, site_episodes, series_id,
-                                                   variant_episodes=variant_episodes)
+                if client_name == '7movies':
+                    site_ep = self._match_exact_season_episode(ep, site_episodes)
+                else:
+                    site_ep = self.matcher.map_episode(ep, site_episodes, series_id,
+                                                       variant_episodes=variant_episodes)
                 if not site_ep:
                     self.logger.warning(f'  Could not map S{season:02d}E{ep_num:02d} to {client_name} episode')
                     total_skipped += 1
@@ -1035,6 +1077,13 @@ class UDBSonarrDaemon:
         self.logger.info(summary)
         colprint('header', f'\n{summary}')
 
+    @staticmethod
+    def _match_exact_season_episode(sonarr_ep, site_episodes):
+        '''Match explicit season and episode numbers, never flat offsets.'''
+        return next((ep for ep in site_episodes
+                     if ep.get('seasonNumber', ep.get('season')) == sonarr_ep.get('seasonNumber')
+                     and ep.get('episode') == sonarr_ep.get('episodeNumber')), None)
+
     def download_episode(self, client, sonarr_series: Dict, sonarr_ep: Dict,
                          site_ep: Dict, site_series: Dict, all_site_eps: List,
                          series_path: str) -> bool:
@@ -1043,6 +1092,8 @@ class UDBSonarrDaemon:
         Returns True on success, False on failure.
         '''
         try:
+            is_sevenmovies = (self.site_clients.get('7movies') is client
+                              or client.__class__.__name__ == 'SevenMoviesClient')
             # Build episode range for just this one episode
             ep_num = float(site_ep.get('episode', 0))
             ep_ranges = {
@@ -1052,7 +1103,7 @@ class UDBSonarrDaemon:
             }
 
             # Fetch episode links from site client
-            download_links = client.fetch_episode_links(all_site_eps, ep_ranges)
+            download_links = client.fetch_episode_links([site_ep] if is_sevenmovies else all_site_eps, ep_ranges)
             if not download_links or ep_num not in download_links:
                 self.logger.error(f'No download links returned for episode {ep_num}')
                 return False
@@ -1077,8 +1128,11 @@ class UDBSonarrDaemon:
                     selected_res = q
                     break
             if not selected_res:
-                selected_res = client._resolution_selector(available_resolutions, self.qualities[0],
-                                                           client.selector_strategy)
+                numeric_resolutions = [r for r in available_resolutions if str(r).isdigit()] if is_sevenmovies else available_resolutions
+                selected_res = client._resolution_selector(numeric_resolutions, self.qualities[0],
+                                                            client.selector_strategy) if numeric_resolutions else None
+                if is_sevenmovies and not numeric_resolutions:
+                    selected_res = 'unknown' if 'unknown' in available_resolutions else None
             if not selected_res:
                 selected_res = available_resolutions[0]
 
@@ -1131,6 +1185,11 @@ class UDBSonarrDaemon:
 
             # Add subtitles if available
             site_ep_data = client.udb_episode_dict.get(ep_num, {})
+            referer = (res_data.get('refererLink') or res_data.get('referer')
+                       or site_ep_data.get('refererLink') or site_ep_data.get('referer')
+                       or getattr(client, 'base_url', ''))
+            if is_sevenmovies:
+                ep_details['refererLink'] = referer
             if 'subtitles' in site_ep_data:
                 ep_details['subtitles'] = site_ep_data['subtitles']
             if 'encrypted_subs_details' in site_ep_data:
@@ -1149,8 +1208,10 @@ class UDBSonarrDaemon:
                 from Utils.YtDlpDownloader import YtDlpDownloader
                 dl_config = dict(self.downloader_config)
                 dl_config['download_dir'] = season_folder
-                dl_config['quality'] = int(selected_res)
-                dl_config['referer'] = getattr(client, 'base_url', '')
+                # Unknown stream height is not a measured resolution. Retain
+                # the requested quality cap for yt-dlp's format selection.
+                dl_config['quality'] = int(self.qualities[0]) if is_sevenmovies and selected_res == 'unknown' else int(selected_res)
+                dl_config['referer'] = referer if is_sevenmovies else getattr(client, 'base_url', '')
                 dl_config['_aes_decrypt'] = getattr(client, '_aes_decrypt', None)
                 dl_client = YtDlpDownloader(dl_config, ep_details)
 
@@ -1175,7 +1236,7 @@ class UDBSonarrDaemon:
                     sniffer = M3u8Sniffer(timeout=30)
                     m3u8_url = None
                     for link in links_to_try:
-                        m3u8_url = sniffer.sniff(link, referer=getattr(client, 'base_url', ''))
+                        m3u8_url = sniffer.sniff(link, referer=referer if is_sevenmovies else getattr(client, 'base_url', ''))
                         if m3u8_url:
                             break
                     if m3u8_url:

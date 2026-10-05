@@ -146,7 +146,7 @@ class SeriesMatcher:
         # the match (e.g. Thai show matching a Chinese show because KissKh
         # didn't return a country).
         if self.verify_country:
-            sonarr_country = sonarr_series.get('countryCode') or sonarr_series.get('country') or ''
+            sonarr_country = self.series_origin_countries(sonarr_series)
             result_country = result.get('country') or ''
             if sonarr_country:
                 if not result_country:
@@ -154,13 +154,27 @@ class SeriesMatcher:
                         f'Marginal match [{result.get("title")}] rejected: site has no country to confirm'
                     )
                     return False
-                if not self._countries_match(sonarr_country, result_country):
+                if not self.series_country_matches(sonarr_series, result_country):
                     self.logger.debug(
                         f'Marginal match [{result.get("title")}] rejected: country {result_country} conflicts with {sonarr_country}'
                     )
                     return False
 
         return True
+
+    @staticmethod
+    def series_origin_countries(series):
+        '''Native Sonarr country takes priority over verified enrichment.'''
+        native = series.get('countryCode') or series.get('country')
+        if native:
+            return [native]
+        origins = series.get('originCountries')
+        return [c for c in origins if isinstance(c, str) and c.strip()] if isinstance(origins, list) else []
+
+    @classmethod
+    def series_country_matches(cls, series, country):
+        return any(cls._countries_match(origin, country)
+                   for origin in cls.series_origin_countries(series))
 
     @staticmethod
     def _normalize_country(country: str) -> str:
@@ -362,7 +376,7 @@ class SeriesMatcher:
             if alt_norm and alt_norm not in sonarr_titles:
                 sonarr_titles.append(alt_norm)
         sonarr_year = str(sonarr_series.get('year', ''))
-        sonarr_country = sonarr_series.get('countryCode') or sonarr_series.get('country') or ''
+        sonarr_country = self.series_origin_countries(sonarr_series)
 
         self.logger.debug(
             f'Scoring Sonarr series [{sonarr_titles}] ({sonarr_year}, country={sonarr_country}) against '
@@ -396,7 +410,7 @@ class SeriesMatcher:
             # even if the title is similar.
             result_country = result.get('country') or ''
             if self.verify_country and sonarr_country and result_country:
-                if self._countries_match(sonarr_country, result_country):
+                if self.series_country_matches(sonarr_series, result_country):
                     title_score += 0.15  # country match bonus
                 else:
                     title_score -= 0.4  # strong penalty for wrong country

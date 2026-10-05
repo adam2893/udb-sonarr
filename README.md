@@ -229,3 +229,27 @@ usage: udb_sonarr.py [-h] [-c CONF] [-D] [-l LOG_FILE] [-v] [--once] [--dry-run]
 MIT (see LICENSE.md)
 
 > **Note:** This tool interfaces with third-party streaming sites. Use responsibly and respect applicable copyright laws in your jurisdiction.
+# Experimental opt-in: 7Movies
+
+Enable explicitly in `config_sonarr.yaml`:
+
+```yaml
+SonarrConfig:
+  site_client: [kisskh, animepahe, asiaflix, 7movies]
+  tmdb_api_key: ''
+Movies & TV Shows (7Movies):
+  base_url: https://7movies.ac/
+  alternate_resolution_selector: highest
+```
+
+`all` remains unchanged and does not include 7Movies; existing KissKh
+preference is unchanged. 7Movies looks up shared TMDB IDs, not fuzzy titles
+or country scores, and matches explicit season/episode numbers. A TMDB API
+key is needed only for TVDB-to-TMDB fallback if Sonarr lacks a TMDB ID.
+Unknown stream resolution stays unknown (yt-dlp uses your requested quality
+as a selection cap, not a claim about the stream's height).
+
+This integration is experimental. Offline integration checks cover dispatch,
+season matching and downloader arguments; resolving a stream is not proof of
+a successful full download or Sonarr import. Full-download validation is not
+claimed by these checks.

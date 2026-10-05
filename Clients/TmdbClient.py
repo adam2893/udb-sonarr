@@ -25,6 +25,17 @@ class TmdbClient:
         self._alias_cache: Dict[int, List[str]] = {}
         # resolved_tmdb_id -> English overview string
         self._overview_cache: Dict[int, str] = {}
+        # Share successful TV details across aliases, overview and origin lookups.
+        self._detail_cache: Dict[int, Dict] = {}
+        self._origin_cache: Dict[int, List[str]] = {}
+
+    def _get_series_detail(self, tmdb_id: int) -> Dict:
+        if tmdb_id not in self._detail_cache:
+            detail = self._get(f'/tv/{tmdb_id}')
+            if not isinstance(detail, dict):
+                raise ValueError('Invalid TMDB series detail response')
+            self._detail_cache[tmdb_id] = detail
+        return self._detail_cache[tmdb_id]
 
     def _get(self, path: str, params: Optional[Dict] = None):
         params = dict(params or {})
@@ -40,8 +51,8 @@ class TmdbClient:
             results = data.get('tv_results', [])
             if results:
                 return results[0].get('id')
-        except Exception as e:
-            self.logger.warning(f'TMDB /find failed for tvdb {tvdb_id}: {e}')
+        except Exception:
+            self.logger.warning(f'TMDB /find failed for tvdb {tvdb_id}')
         return None
 
     def get_series_aliases(self, tmdb_id: Optional[int] = None,
@@ -76,7 +87,7 @@ class TmdbClient:
             self.logger.warning(f'TMDB alternative_titles failed for id {resolved}: {e}')
 
         try:
-            detail = self._get(f'/tv/{resolved}')
+            detail = self._get_series_detail(resolved)
             original = detail.get('original_name')
             if original and original not in aliases:
                 aliases.append(original)
@@ -100,10 +111,38 @@ class TmdbClient:
         if resolved in self._overview_cache:
             return self._overview_cache[resolved]
         try:
-            detail = self._get(f'/tv/{resolved}')
+            detail = self._get_series_detail(resolved)
             overview = detail.get('overview', '')
-        except Exception as e:
-            self.logger.warning(f'TMDB overview fetch failed for id {resolved}: {e}')
-            overview = ''
+        except Exception:
+            self.logger.warning(f'TMDB overview fetch failed for id {resolved}')
+            return ''
         self._overview_cache[resolved] = overview
         return overview
+
+    def get_series_origin_countries(self, tmdb_id: Optional[int] = None,
+                                    tvdb_id: Optional[int] = None) -> List[str]:
+        '''Return production origin country codes, not language or title regions.'''
+        resolved = tmdb_id
+        if not resolved and tvdb_id:
+            resolved = self._find_tmdb_id(tvdb_id)
+        if not resolved:
+            return []
+        if resolved in self._origin_cache:
+            return list(self._origin_cache[resolved])
+        try:
+            detail = self._get_series_detail(resolved)
+        except Exception:
+            # Request exceptions can include a URL containing the API key.
+            self.logger.warning(f'TMDB origin fetch failed for id {resolved}')
+            return []
+        metadata = detail.get('origin_country')
+        countries = []
+        if isinstance(metadata, list):
+            for country in metadata:
+                if (isinstance(country, str) and len(country) == 2
+                        and country.isascii() and country.isalpha()):
+                    code = country.upper()
+                    if code not in countries:
+                        countries.append(code)
+        self._origin_cache[resolved] = countries
+        return list(countries)
