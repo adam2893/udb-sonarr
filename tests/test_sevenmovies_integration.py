@@ -98,8 +98,7 @@ class SevenMoviesIntegrationTests(unittest.TestCase):
                     if isinstance(n, ast.Assign) and isinstance(n.value, ast.List)
                     and all(isinstance(e, ast.Constant) for e in n.value.elts)
                     and any(isinstance(t, ast.Attribute) and t.attr == 'site_client_names' for t in n.targets)]
-        self.assertIn(['kisskh', 'animepahe', 'asiaflix'], defaults)
-        self.assertTrue(all('7movies' not in value for value in defaults))
+        self.assertIn(['kisskh', 'animepahe', 'asiaflix', '7movies'], defaults)
 
 
 if __name__ == '__main__':

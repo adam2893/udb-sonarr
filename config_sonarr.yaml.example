@@ -37,9 +37,9 @@ SonarrConfig:
   
   # Which site clients to use for downloading
   # Can be a single name, a list, or 'all'
-  # Options: kisskh, animepahe, asiaflix; experimental opt-in: 7movies
+  # Options: kisskh, animepahe, asiaflix, 7movies (experimental)
   # 'all' retains kisskh, animepahe, asiaflix only (KissKh preferred).
-  # To opt in: site_client: [kisskh, animepahe, asiaflix, 7movies]
+  # 'all' includes all four providers, including 7movies.
   site_client: all
   
   # Only process series that carry at least one of these Sonarr tags.

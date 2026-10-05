@@ -229,9 +229,9 @@ usage: udb_sonarr.py [-h] [-c CONF] [-D] [-l LOG_FILE] [-v] [--once] [--dry-run]
 MIT (see LICENSE.md)
 
 > **Note:** This tool interfaces with third-party streaming sites. Use responsibly and respect applicable copyright laws in your jurisdiction.
-# Experimental opt-in: 7Movies
+# Experimental provider: 7Movies
 
-Enable explicitly in `config_sonarr.yaml`:
+Included with `site_client: all`, or select providers explicitly in `config_sonarr.yaml`:
 
 ```yaml
 SonarrConfig:
@@ -242,7 +242,7 @@ Movies & TV Shows (7Movies):
   alternate_resolution_selector: highest
 ```
 
-`all` remains unchanged and does not include 7Movies; existing KissKh
+`all` includes KissKh, AnimePahe, Asiaflix and 7Movies; existing KissKh
 preference is unchanged. 7Movies looks up shared TMDB IDs, not fuzzy titles
 or country scores, and matches explicit season/episode numbers. A TMDB API
 key is needed only for TVDB-to-TMDB fallback if Sonarr lacks a TMDB ID.

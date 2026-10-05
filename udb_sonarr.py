@@ -137,7 +137,7 @@ class UDBSonarrDaemon:
         site_client_config = sonarr_config.get('site_client', 'all')
         if isinstance(site_client_config, str):
             if site_client_config.lower() == 'all':
-                self.site_client_names = ['kisskh', 'animepahe', 'asiaflix']
+                self.site_client_names = ['kisskh', 'animepahe', 'asiaflix', '7movies']
             elif ',' in site_client_config:
                 # e.g. env UDB_SITE_CLIENT="kisskh,asiaflix"
                 self.site_client_names = [s.strip().lower() for s in site_client_config.split(',') if s.strip()]
