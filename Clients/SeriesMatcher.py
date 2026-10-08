@@ -109,18 +109,18 @@ class SeriesMatcher:
         if raw_title_score < self.match_threshold:
             return False
 
-        # Marginal: require meaningful word overlap. SequenceMatcher is
-        # character-level, so titles that share only generic words ("series",
-        # "the", "drama") can score above the threshold while being completely
-        # different shows. Jaccard similarity of meaningful words must be >= 0.2
-        # unless the synopses strongly agree.
-        if overlap < 0.2 and synopsis_sim < 0.5:
+        # Marginal: require substantial title agreement. Year and country are
+        # useful corroboration, but are not title identity evidence: unrelated
+        # shows can share both (for example, two Thai dramas from 2026).
+        # Different localized titles remain eligible when their synopses agree.
+        if overlap < 0.6 and not containment and synopsis_sim < 0.5:
             self.logger.debug(
-                f'Marginal match [{result.get("title")}] rejected: word overlap {overlap:.2f} < 0.2 '
+                f'Marginal match [{result.get("title")}] rejected: title overlap {overlap:.2f} < 0.6 '
+                f'without containment or synopsis confirmation '
                 f'(sonarr="{sonarr_title}" vs result="{result_title}")'
             )
             return False
-        if overlap < 0.2 and synopsis_sim >= 0.5:
+        if overlap < 0.6 and not containment and synopsis_sim >= 0.5:
             self.logger.debug(
                 f'Marginal match [{result.get("title")}] accepted: synopsis similarity '
                 f'{synopsis_sim:.2f} >= 0.5 despite low word overlap {overlap:.2f}'
