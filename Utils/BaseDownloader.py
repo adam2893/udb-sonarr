@@ -15,6 +15,11 @@ from Utils.commons import colprint, exec_os_cmd, retry, PRINT_THEMES, DISPLAY_CO
 
 
 class BaseDownloader():
+    # Keep segment downloads bounded in containers with low PID/thread limits.
+    # ``ThreadPoolExecutor(max_workers=None)`` derives a worker count from the
+    # host CPU count, which can exhaust a small container when a playlist has
+    # thousands of segments.
+    DEFAULT_CONCURRENCY_PER_FILE = 8
     '''
     Download Client for downloading files directly using requests and http.client
     '''
@@ -31,7 +36,11 @@ class BaseDownloader():
         # "Season 01/Season-1/..." which Sonarr never scans.
         if dl_config.get('use_season_folder', True) and ep_details.get('type', '') == 'tv':
             self.out_dir = f"{self.out_dir}{os.sep}Season-{ep_details['season']}"
-        self.concurrency = None if dl_config.get('concurrency_per_file', 'auto') == 'auto' else dl_config['concurrency_per_file']
+        configured_concurrency = dl_config.get('concurrency_per_file', 'auto')
+        if configured_concurrency == 'auto':
+            self.concurrency = self.DEFAULT_CONCURRENCY_PER_FILE
+        else:
+            self.concurrency = max(1, int(configured_concurrency))
         self.parent_temp_dir = os.path.join(f'{self.out_dir}', 'temp_dir') if dl_config.get('temp_download_dir', 'auto') == 'auto' else dl_config['temp_download_dir']
         self.temp_dir = os.path.join(f"{self.parent_temp_dir}", f"{self.out_file.replace('.mp4','')}") #create temp directory per episode
         self.request_timeout = dl_config.get('request_timeout', 30)
