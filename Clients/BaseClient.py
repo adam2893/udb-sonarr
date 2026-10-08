@@ -137,6 +137,8 @@ class BaseClient():
             # raise Exception(msg)
 
         else:
+            if return_type.lower() == 'raw':
+                return response
             _conditional_logger(silent, f'Failed with code: {response.status_code}')
 
     def _get_bsoup(self, search_url, referer=None, request_type='get', extra_headers=None, cookies={}, post_data=None, upload_data=None, silent=False):

@@ -8,6 +8,38 @@ from Clients.BaseClient import BaseClient
 
 
 class KissKhClient(BaseClient):
+    @staticmethod
+    def _api_error_summary(response):
+        """Return a short, token-free diagnostic for a failed episode call."""
+        try:
+            data = response.json()
+            if isinstance(data, dict):
+                for key in ('message', 'error', 'status', 'detail'):
+                    if data.get(key):
+                        return f'{key}={str(data[key])[:160]}'
+                return f'JSON keys={", ".join(sorted(str(k) for k in data)[:12]) or "none"}'
+        except Exception:
+            pass
+        text = ' '.join((getattr(response, 'text', '') or '').split())
+        return text[:160] if text else 'empty response body'
+
+    def _fetch_episode_stream(self, episode_id, token):
+        url = self.episode_url.format(id=str(episode_id)) + token
+        response = self._send_request(url, return_type='raw', silent=True)
+        if response is None:
+            return None
+        if response.status_code != 200:
+            self.logger.warning(
+                f'KissKH episode API returned HTTP {response.status_code}: '
+                f'{self._api_error_summary(response)}'
+            )
+            return None
+        try:
+            return response.json()
+        except Exception:
+            self.logger.warning('KissKH episode API returned invalid JSON')
+            return None
+
     '''
     All-in-one Client for kisskh site
     '''
@@ -297,7 +329,7 @@ class KissKhClient(BaseClient):
                 token = self._get_token(episode_id, self.viGuid)
                 self.logger.debug(f'Fetching stream link')
                 try:
-                    dl_links = self._send_request(self.episode_url.format(id=str(episode_id)) + token, return_type='json')
+                    dl_links = self._fetch_episode_stream(episode_id, token)
                 except Exception:
                     dl_links = None
                 if dl_links is None:
@@ -306,7 +338,7 @@ class KissKhClient(BaseClient):
                     self.token_cache.pop((episode_id, self.viGuid), None)
                     token = self._get_token(episode_id, self.viGuid)
                     try:
-                        dl_links = self._send_request(self.episode_url.format(id=str(episode_id)) + token, return_type='json')
+                        dl_links = self._fetch_episode_stream(episode_id, token)
                     except Exception:
                         dl_links = None
 
