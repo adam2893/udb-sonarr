@@ -978,6 +978,12 @@ class UDBSonarrDaemon:
                     total_skipped += 1
                     continue
 
+                self.logger.info(
+                    f'  Episode mapping: S{season:02d}E{ep_num:02d} -> '
+                    f'{client_name} episode {site_ep.get("episode")} '
+                    f'(episode_id={site_ep.get("episodeId", "n/a")})'
+                )
+
                 self.logger.info(f'  Downloading S{season:02d}E{ep_num:02d} -> {client_name} ep {site_ep.get("episode")}')
                 colprint('predefined',
                          f'  Downloading S{season:02d}E{ep_num:02d} from {client_name} '

@@ -361,6 +361,10 @@ class KissKhClient(BaseClient):
 
                 # skip if no stream link found
                 if link is None:
+                    self.logger.info(
+                        f'KissKH episode {ep}: catalogue entry has no playable Video link '
+                        f'(episode_id={episode_id})'
+                    )
                     continue
 
                 # check if link has countdown timer for upcoming releases
@@ -368,6 +372,11 @@ class KissKhClient(BaseClient):
                     self.logger.debug(f'Episode {ep} is not released yet')
                     self._show_episode_links(ep, {'error': 'Not Released Yet'}, display_prefix)
                     continue
+
+                self.logger.debug(
+                    f'KissKH episode {ep}: playable Video link received '
+                    f'(episode_id={episode_id})'
+                )
 
                 # add episode details & stream link to udb dict
                 self._update_udb_dict(ep, episode)
